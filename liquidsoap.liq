@@ -31,6 +31,52 @@ ignore(autodj_ping_attempts)
 ### Secrets should not be checked in. Duh.
 ### BEGIN: BFF.fm Configuration and Secrets ###
 
+azuracast_station_id = ref(5)
+
+# Creek CMS integration
+creek_app_id = ref("")
+creek_api_base = ref("")
+creek_public_base = ref("")
+
+# Harbor Ingest configuration
+ingest_icecast_port = ref(8015)
+
+# Ingest precedence stacks all created HTTP harbors (by name) to create the cascade by which on-air is determined.
+# The names need to match the names of ingest sources created later.
+# TODO: DRY: Find a clean way to build this list implicitly
+ingest_channel_precedence = ref([
+  "Emergency Broadcast",
+  "Remote DJ",
+  "Studio F",
+  "Studio A",
+  "Studio Automation"
+])
+
+ingest_studio_a_password = ref("")
+ingest_studio_f_password = ref("")
+ingest_automation_password = ref("")
+
+# Configure Last.FM scrobbling
+lastfm_app_id = ref("")
+lastfm_app_secret = ref("")
+lastfm_session_token = ref("")
+
+# Prefix all Slack logs with this text:
+slack_message_prefix = ref(":safety_vest: ")
+slack_default_channel = ref("") # ABC/DEF/fafas23 webhook
+slack_named_channels = ref([
+  ("alerts", slack_default_channel),
+  ("stream_auth", slack_default_channel),
+  ("now_playing", ref(""))
+])
+
+tunein_partner_id = ref("")
+tunein_partner_key =  ref("")
+tunein_station_id = ref("")
+
+user_agent_name = ref("BFF.fm Broadcast System")
+user_agent_url = ref("https://bff.fm")
+
 ### END: BFF.fm Configuration and Secrets ###
 
 ### BEGIN: BFF.fm Library Code ###
