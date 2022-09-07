@@ -118,70 +118,41 @@ def hash.md5 =
 end
 
 ## Curl HTTP functions
-# We need to POST and GEt data via CURL, so these wrappers provide rudimentary
+# We need to POST and GET data via CURL, these wrappers provide some sugar around the build-in http.get/post
 
 let curl = ()
 let curl.version = ref(list.hd(get_process_lines(env=[("STR", str)], "curl --version | head -1 | awk '{ print $1 "/" $2 }'"), default="curl/unknown"))
 let curl.userAgent = ref("LiquidSoap/#{liquidsoap.version} (#{!curl.version}) #{!user_agent_name} <#{!user_agent_url}>")
 
-def curl.json(~data=[], url) =
-  list.hd(get_process_lines(env=[("UA", !curl.userAgent), ("URL", url), ("JSON", json_of(data))], "curl -A \"$UA\" -X POST -H 'Content-type: application/json' --data \"$JSON\"  --url $URL"), default="")
+def curl.json(~data=[], ~timeout_ms=2000, url) =
+  http.post(url,
+    headers=[
+      ("User-Agent", !curl.userAgent),
+      ("Content-Type", "application/json")
+    ]),
+    timeout_ms=timeout_ms,
+    data=json.stringify(data)
+  )
 end
 
-def curl.post(~data=[], url) =
+def curl.post(~data=[], ~timeout_ms=2000, url) =
   def buildDataString(data, arg) =
     data ^ fst(arg) ^ "=" ^ url.encode(snd(arg)) ^ "&"
   end
   formData = list.fold(buildDataString, "", data)
 
-  log.debug("CURL Post cmd: curl -X POST -H 'Content-Type: application/x-www-form-urlencoded' -d #{formData} --url #{url}")
-  list.hd(get_process_lines(env=[("UA", !curl.userAgent), ("URL", url), ("DATA", formData)], "curl -A \"$UA\" -X POST -H 'Content-Type: application/x-www-form-urlencoded' -d \"$DATA\" --url $URL"), default="")
+  http.post(url,
+    headers=[
+      ("User-Agent", !curl.userAgent),
+      ("Content-Type": "application/x-www-form-urlencoded")
+    ]),
+    timeout_ms=timeout_ms,
+    data=formData
+  )
 end
 
-def curl.fetch(~ignoreHtml=true, url) =
-  resp = list.hd(get_process_lines(env=[("UA", !curl.userAgent), ("URL", url)], "curl -A \"$UA\" -X GET --url $URL"), default="")
-
-  # Since we don't process response headers, errors for data often show up as getting an HTML
-  # page back when JSON or TEXT was expected. Not ideal, but functional.
-  if (ignoreHtml == true) and (resp == "<!doctype html>" or resp == "<!DOCTYPE html>" or resp == "<html>") then
-    ""
-  else
-    resp
-  end
-end
-
-# TODO: Implement curl.request, which should call `curl -i` and process response headers into Pairs, with special accessors for
-#       the status code and body content. Will allow for inspecting the response code rather than relying on content-sniffing
-# e.g.
-#
-# [
-#   ("content-type", "text/html")
-#   ("age", "9")
-#   ("HTTP_STATUS", "200")
-#   ("BODY", "<!doctype>...")
-# ]
-def curl.request(~method="GET", ~rawData="", ~contentType="", url) =
-  "Not Implemented Yet"
-end
-
-## AzuraCast API  wrapper
-# AzuraCast has an API of its own whih is used for internal tracking/reporting and analytics
-# and provides access to the Streamer authentication endpoints.
-#
-# We use multiple AzuraCast “stations” at BFF.fm — in order to test changes to our configuration
-# without affecting our production stream, albeit in the same AzuraCast instance. Therefore we provide
-# some overridable config
-
-let azcast = ()
-let azcast.base = ref("http://web/api/internal")
-let azcast.stationId = azuracast_station_id
-
-def azcast.post(~data=[], endpoint)
-  url = "#{!azcast.base}/#{!azcast.stationId}/#{endpoint}"
-  fullData = list.append([
-    ('api_auth', !azuracast_api_auth)
-  ], data)
-  curl.post(data=fullData, url)
+def curl.fetch(~timeout_ms=2000, url) =
+  http.get(url, headers=[("User-Agent", !curl.userAgent)], timeout_ms=timeout_ms)
 end
 
 ## BFF.fm API functions
@@ -189,7 +160,6 @@ end
 # BFF.fm CMS is a forked version of Creek, along with some of our own deployment idiocyncracies,
 # so this wrapper makes calling the API easier
 let bff = ()
-
 let bff.appId = creek_app_id
 let bff.base = creek_api_base
 let bff.publicBase = creek_public_base
@@ -202,7 +172,13 @@ def bff.fetch(~cacheBust=false, endpoint)
   end
 
   fullApiCallUrl = "#{!bff.base}/api/#{endpoint}?app_id=#{url.encode(!bff.appId)}#{appendUrl}"
-  curl.fetch(fullApiCallUrl)
+  response = curl.fetch(fullApiCallUrl)
+
+  if (response.status_code == 200) then
+    "#{response}"
+  else
+    ""
+  end
 end
 
 def bff.post(~data=[], endpoint)
@@ -210,7 +186,13 @@ def bff.post(~data=[], endpoint)
   fullData = list.append([
     ('app_id', !bff.appId)
   ], data)
-  curl.post(data=fullData, url)
+  response = curl.post(data=fullData, url)
+
+  if (response.status_code == 200) then
+    "#{response}"
+  else
+    ""
+  end
 end
 
 # Create a special "now" endpoint shortlink that will direct users to the most relevant show/broadcast
@@ -241,7 +223,7 @@ end
 
 def slack.log(~channel = "", message) =
   channelHook = list.assoc(default=slack.defaultChannel, channel, !slack.channels)
-  slack.send(channelHook, message)
+  ignore(slack.send(channelHook, message))
 end
 
 ## Last.FM Functions
