@@ -482,42 +482,52 @@ end
 
 # Global “on connection” handler
 def ingest.onDjConnect() =
-    dj_name = ingest.currentDj()
-    if (dj_name != "") then
-      azcast.post("djon", data=[("dj-user", dj_name)])
-      #log.debug("AzuraCast remote DJ connected response: #{ret}")
-      slack.log(":rotating_light: ON AIR: *#{dj_name}*")
-    end
+  dj_name = ingest.currentDj()
+  if (dj_name != "") then
+    _ = azuracast_api_call(
+      timeout_ms=5000,
+      "djon",
+      json.stringify({user = dj_name})
+    )
+    #log.debug("AzuraCast remote DJ connected response: #{ret}")
+    slack.log(":rotating_light: ON AIR: *#{dj_name}*")
+  end
 end
 
 # Global “on disconnect handler
 def ingest.onDjDisconnect() =
-    dj_name = ingest.currentDj()
-    log.debug("Source disconnected. Current broadcaster was: #{dj_name}")
+  dj_name = ingest.currentDj()
+  log.debug("Source disconnected. Current broadcaster was: #{dj_name}")
 
-    if (dj_name != "") then
-      ignore(azcast.post("djoff", data=[("dj-user", dj_name)]))
-    end
+  if (dj_name != "") then
+    _ = azuracast_api_call(
+      timeout_ms=5000,
+      "djoff",
+      json.stringify({user = !dj_name})
+    )
+  end
+end
+
+# Handle parsing of username:password strings from legacy clients
+def ingest.parseCredentials(login) =
+  if (login.user == "source" or login.user == "") and (string.match(pattern="(:|,)+", login.password)) then
+    auth_string = string.split(separator="(:|,)", login.password)
+    {user = list.nth(default="", auth_string, 0),
+    password = list.nth(default="", auth_string, 2)}
+  else
+    {user = login.user, password = login.password}
+  end
 end
 
 # Create a studio source
 # — These sources have a single fixed password baked into the configuration.
 def ingest.makeStudioSource(studioName, ~mount, ~username="source", ~password, ~dropMetadata=false) =
-  def studioAuth(auth_user, auth_pw) =
+  def studioAuth(login) =
     input_user = ref("")
     input_password = ref("")
+    auth_info = ingest.parseCredentials(login)
 
-    # Handle legacy ShoutCast authentication strings:
-    if (auth_user == "source" or auth_user == "") and (string.match(pattern="(:|,)+", auth_pw)) then
-      auth_string = string.split(separator="(:|,)", auth_pw)
-      input_user := list.nth(default="", auth_string, 0)
-      input_password := list.nth(default="", auth_string, 2)
-    else
-      input_user := auth_user
-      input_password := auth_pw
-    end
-
-    if ((!input_user == username) and (!input_password == password )) then
+    if ((!auth_info.user == username) and (!auth_info.password == password )) then
       ingest.connections := list.add((studioName, username), !ingest.connections)
       log.info("Studio connected: #{username}")
       true
@@ -568,33 +578,22 @@ def ingest.makeAzuraCastStreamerSource(studioName, ~mount, ~dropMetadata=false) 
   # Keep track of who the last DJ was so we can monitor when it changes.
   lastDj = ref("")
 
-  def azuracastAuth(auth_user, auth_pw) =
-    user = ref("")
-    password = ref("")
-
-    # Handle legacy authentication strings:
-    if (auth_user == "source" or auth_user == "") and (string.match(pattern="(:|,)+", auth_pw)) then
-        auth_string = string.split(separator="(:|,)", auth_pw)
-
-        user := list.nth(default="", auth_string, 0)
-        password := list.nth(default="", auth_string, 2)
-    else
-        user := auth_user
-        password := auth_pw
-    end
-
-    log.debug("Authenticating Remote DJ: #{!user}")
-
-    ret = azcast.post("auth", data=[("dj-user", !user), ("dj-password", !password)])
-    log.debug("AzuraCast DJ auth response: #{ret}")
-    authed = bool_of_string(ret)
+  def azuracastAuth(login) =
+    auth_info = ingest.parseCredentials(login)
+    response = azuracast_api_call(
+      timeout_ms=5000,
+      "auth",
+      json.stringify(auth_info)
+    )
+    authed = bool_of_string(response)
 
     if (authed) then
-      lastDj := !user
-      log.debug("Set lastDj to: #{!lastDj} (#{!user})")
+      lastDj := !auth_info.user
+      log.debug("Set lastDj to: #{!lastDj} (#{!auth_info.user})")
     else
-      log.important("Remote DJ authentication failed: #{!user} authentication returned false")
+      log.important("Remote DJ authentication failed: #{!auth_info.user} authentication returned false")
     end
+
     authed
   end
 
@@ -651,31 +650,19 @@ def ingest.makeCreekStreamerSource(studioName, ~mount, ~dropMetadata=false, ~aut
   # Keep track of who the last DJ was so we can monitor when it changes.
   lastDj = ref("")
 
-  def creekAuth(auth_user, auth_pw) =
-    user = ref("")
-    password = ref("")
+  def creekAuth(login) =
+    auth_info = ingest.parseCredentials(login)
 
-    # Handle legacy authentication strings:
-    if (auth_user == "source" or auth_user == "") and (string.match(pattern="(:|,)+", auth_pw)) then
-        auth_string = string.split(separator="(:|,)", auth_pw)
-
-        user := list.nth(default="", auth_string, 0)
-        password := list.nth(default="", auth_string, 2)
-    else
-        user := auth_user
-        password := auth_pw
-    end
-
-    log.debug("Authenticating Creek DJ: #{!user}")
+    log.debug("Authenticating Creek DJ: #{auth_info.user}")
 
     ret = bff.post(authEndpoint, data=[
-      ("username", !user),
-      ("password", !password)
+      ("username", auth_info.user),
+      ("password", auth_info.password)
     ])
     log.debug("Creek DJ auth response: #{ret}")
 
-    result = of_json(default=[("authenticated", false)], ret)
-    resultContent = of_json(default=[("foo", "bar")], ret)
+    result = json.parse(default=[("authenticated", false)], ret)
+    resultContent = json.parse(default=[("foo", "bar")], ret)
 
     authed = list.assoc(default=false, "authenticated", result)
 
@@ -762,8 +749,7 @@ dj_sources = fallback(track_sensitive=false, [
 # Here, we poll the CMS for track changes.
 
 creek_metadata_source = insert_metadata(dj_sources)
-insert_creek_metadata = fst(creek_metadata_source)
-dj_sources = snd(creek_metadata_source)
+dj_sources = creek_metadata_source
 
 # For debugging purposes, we store the last unique track name, and the
 # timestamp of when it was registered
@@ -777,10 +763,7 @@ def poll_creek_metadata() =
   playing = bff.fetch(cacheBust=true, "data/tracks/now.json")
   log.debug("Fetched: #{playing}")
 
-  # TODO: When curl.request is implemented, check the actual HTTP Response here,
-  # rather than sniffing for empty data
-
-  playingData = of_json(default=[("", "")], playing)
+  playingData = json.parse(default=[("", "")], playing)
   artist = list.assoc(default="", "artist", playingData)
   title = list.assoc(default="", "title", playingData)
   album = list.assoc(default="", "album", playingData)
@@ -795,7 +778,7 @@ def poll_creek_metadata() =
       last_creek_track := (playingString, now)
 
       # Chaged metadata so update source metadata as 'new track'
-      insert_creek_metadata(new_track=true, [("title", playingString)])
+      creek_metadata_source.insert_metadata(new_track=true, [("title", playingString)])
 
         # Scrobble new tracks to Last.FM
       lastfm.scrobble(artist=artist, album=album, track=title)
@@ -823,7 +806,7 @@ def poll_creek_metadata() =
       last_creek_track := (show, now)
 
       # Update source metadata, but not as a 'track'
-      insert_creek_metadata(new_track=false, [("title", show)])
+      creek_metadata_source.insert_metadata(new_track=false, [("title", show)])
 
       # Log to Slack
       slack.log(channel="now_playing", ":radio: #{show}")
