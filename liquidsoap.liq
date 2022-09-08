@@ -1025,3 +1025,22 @@ radio = fallback(track_sensitive=false, [emergency_broadcast, dj_sources, radio]
 output.icecast(%mp3(samplerate=44100, stereo=true, bitrate=128, id3v2=true), id="local_1", host = "127.0.0.1", port = 8000, password = "(PASSWORD)", mount = "/radio.mp3", name = "BFF.fm Azupgrade Station", description = "Testing the Azuracast Upgrade", genre = "Unclassifiable", url = "https://bff.fm", public = false, encoding = "UTF-8", radio)
 
 # Remote Relays
+
+# Custom Configuration (Specified in Station Profile)
+# BEGIN: BFF.fm Slack Status Output
+
+def start_notices() =
+  log("Liquidsoap started.")
+  slack.log(":small_red_triangle: Liquidsoap started.")
+end
+
+on_start(start_notices)
+
+def shutdown_notices() =
+  log("Liquidsoap shut down.")
+  slack.log(":small_red_triangle_down: Liquidsoap shutdown.")
+end
+
+on_shutdown(shutdown_notices)
+
+# END: BFF.fm Slack Status Output
