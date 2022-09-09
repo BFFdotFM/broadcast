@@ -170,36 +170,64 @@ let curl = ()
 let curl.version = ref(list.hd(default="curl/unknown", process.read.lines("curl --version | head -1 | awk '{ print $1 \"/\" $2 }'")))
 let curl.userAgent = ref("LiquidSoap/#{liquidsoap.version} (#{!curl.version}) #{!user_agent_name} <#{!user_agent_url}>")
 
+def curl.json(~data={}, ~timeout_ms=2000, theUrl) =
+  log("cURL JSON: #{theUrl}")
+  try
+    response = http.post(theUrl,
+      headers=[
+        ("User-Agent", !curl.userAgent),
+        ("Content-Type", "application/json")
+      ],
+      timeout_ms=timeout_ms,
+      data=json.stringify(compact=true, data)
+    )
 
-def curl.json(~data=[], ~timeout_ms=2000, theUrl) =
-  http.post(theUrl,
-    headers=[
-      ("User-Agent", !curl.userAgent),
-      ("Content-Type", "application/json")
-    ],
-    timeout_ms=timeout_ms,
-    data=json.stringify(data)
-  )
+    log("cURL JSON: #{theUrl} - Response (#{response.status_code})")
+    "#{response}"
+  catch err do
+    log("cURL JSON: #{theUrl} - Error: #{error.kind(err)} - #{error.message(err)}")
+    "Unknown HTTP error"
+  end
 end
 
 def curl.post(~data=[], ~timeout_ms=2000, theUrl) =
+  log("cURL POST: #{theUrl}")
+
   def buildDataString(data, arg) =
     data ^ fst(arg) ^ "=" ^ url.encode(snd(arg)) ^ "&"
   end
   formData = list.fold(buildDataString, "", data)
 
-  http.post(theUrl,
-    headers=[
-      ("User-Agent", !curl.userAgent),
-      ("Content-Type", "application/x-www-form-urlencoded")
-    ],
-    timeout_ms=timeout_ms,
-    data=formData
-  )
+  try
+    response = http.post(theUrl,
+      headers=[
+        ("User-Agent", !curl.userAgent),
+        ("Content-Type", "application/x-www-form-urlencoded")
+      ],
+      timeout_ms=timeout_ms,
+      data=formData
+    )
+    log("cURL POST: #{theUrl} - Response (#{response.status_code})")
+    "#{response}"
+  catch err do
+    log("cURL POST: #{theUrl} - Error: #{error.kind(err)} - #{error.message(err)}")
+    "Unknown HTTP error"
+  end
 end
 
 def curl.fetch(~timeout_ms=2000, theUrl) =
-  http.get(theUrl, headers=[("User-Agent", !curl.userAgent)], timeout_ms=timeout_ms)
+  log("cURL GET: #{theUrl}")
+  try
+    response = http.get(theUrl,
+      headers=[("User-Agent", !curl.userAgent)],
+      timeout_ms=timeout_ms
+    )
+    log("cURL GET: #{theUrl} - Response (#{response.status_code})")
+    "#{response}"
+  catch err do
+    log("cURL GET: #{theUrl} - Error: #{error.kind(err)} - #{error.message(err)}")
+    "Unknown HTTP error"
+  end
 end
 
 ## BFF.fm API functions
@@ -219,13 +247,7 @@ def bff.fetch(~cacheBust=false, endpoint)
   end
 
   fullApiCallUrl = "#{!bff.base}/api/#{endpoint}?app_id=#{url.encode(!bff.appId)}#{appendUrl}"
-  response = curl.fetch(fullApiCallUrl)
-
-  if (response.status_code == 200) then
-    "#{response}"
-  else
-    ""
-  end
+  curl.fetch(fullApiCallUrl)
 end
 
 def bff.post(~data=[], endpoint)
@@ -233,13 +255,7 @@ def bff.post(~data=[], endpoint)
   fullData = list.append([
     ('app_id', !bff.appId)
   ], data)
-  response = curl.post(data=fullData, url)
-
-  if (response.status_code == 200) then
-    "#{response}"
-  else
-    ""
-  end
+  curl.post(data=fullData, url)
 end
 
 # Create a special "now" endpoint shortlink that will direct users to the most relevant show/broadcast
@@ -264,13 +280,17 @@ let slack.channels = slack_named_channels
 let slack.messagePrefix = slack_message_prefix
 
 def slack.send(hook, message) =
-  payload = [("text", "[#{timestamp.hms()}] #{!slack.messagePrefix}#{message}"), ("type", "mrkdwn")]
-  ignore(curl.json(data=payload, "https://hooks.slack.com/services/#{hook}"))
+  messageObject = {
+    text = "[#{timestamp.hms()}] #{!slack.messagePrefix}#{message}",
+    type = "mrkdwn"
+  }
+  log("SLACK: #{message}")
+  ignore(curl.json(data=messageObject, "https://hooks.slack.com/services/#{hook}"))
 end
 
-def slack.log(~channel = "", message) =
+def slack.log(~channel="", message) =
   channelHook = list.assoc(default=slack.defaultChannel, channel, !slack.channels)
-  ignore(slack.send(channelHook, message))
+  slack.send(!channelHook, message)
 end
 
 ## Last.FM Functions
