@@ -965,17 +965,21 @@ def poll_creek_metadata() =
   now = timestamp.hms()
 
   # Fetch the now playing track from BFF.fm API
-  playing = bff.fetch(cacheBust=true, "data/tracks/now.json")
-  log.debug("Fetched: #{playing}")
+  onAirJson = bff.fetch(cacheBust=true, "data/onair/now.json")
+  log.debug("Fetched: #{onAirJson}")
 
-  let json.parse playingData = playing
-  artist = playingData.artist
-  title = playingData.title
-  album = playingData.album
-  label = playingData.label
+  let json.parse (onAir : {
+    artist: string?,
+    title: string?,
+    album: string?,
+    label: string?,
+    program: string?,
+    presenter: string?,
+    url: string?
+  }) = onAirJson
 
-  if (artist != "") then
-    playingString = "#{artist} - #{title}"
+  if (onAir.artist != null()) then
+    playingString = "#{onAir.artist} - #{onAir.title}"
 
     # If the currently playing track isn't the same as on last poll:
     if (playingString != last_name) then
@@ -985,25 +989,24 @@ def poll_creek_metadata() =
       # Chaged metadata so update source metadata as 'new track'
       creek_metadata_source.insert_metadata(new_track=true, [("title", playingString)])
 
-        # Scrobble new tracks to Last.FM
-      lastfm.scrobble(artist=artist, album=album, track=title)
+      # Scrobble new tracks to Last.FM
+      lastfm.scrobble(artist="#{onAir.artist}", album="#{onAir.album}", track="#{onAir.title}")
 
       # Log Now Playing to TuneIn AIR API
-      tunein.nowPlaying(artist=artist, track=title, album=album)
+      tunein.nowPlaying(artist="#{onAir.artist}", track="#{onAir.title}", album="#{onAir.album ?? onAir.title}")
 
       # Log to Slack
-      slack.log(channel="now_playing", ":notes: #{artist} - #{title} (#{album}) [#{label}]")
+      slack.log(channel="now_playing", ":notes: #{onAir.artist} - #{onAir.title} (#{onAir.album}) [#{onAir.label ?? 'No Label'}]")
     end
   else
     # No track: Display the current show/host/station
-    show = bff.fetch(cacheBust=true, "data/shows/now.text")
 
     # Generally, BFF.fm should always have a show in the schedule (even placeholders), but
     # just in case there's a gap, or a data error, fall back to
-    show = if (show == "") then
-      "BFF.fm"
+    show = if (onAir.program != null()) then
+      "#{onAir.program}"
     else
-      show
+      "BFF.fm"
     end
 
     if (show != last_name) then
@@ -1014,17 +1017,10 @@ def poll_creek_metadata() =
       creek_metadata_source.insert_metadata(new_track=false, [("title", show)])
 
       # Log to Slack
-      slack.log(channel="now_playing", ":radio: #{show}")
+      slack.log(channel="now_playing", ":radio: #{show} with #{onAir.presenter ?? 'Unknown Host'}")
 
       # Log Now Playing 'commerical'/non-music to TuneIn
-      # Split Artist - Name format and send to AIR
-      # TODO: Might be cleaner with a JSON response from Creek
-      parts = list.map(string.trim, string.split(separator="-", show))
-      if (list.length(parts) == 2) then
-        attribution = list.hd(default="", parts)
-        name = list.nth(default="", parts, 1)
-        tunein.nonMusic(attribution=attribution, name=name)
-      end
+      tunein.nonMusic(attribution=(onAir.presenter ?? "BFF.fm"), name=show)
     end
   end
 
@@ -1032,7 +1028,7 @@ def poll_creek_metadata() =
   (10.)
 end
 
-add_timeout(fast=false, 10., poll_creek_metadata)
+thread.run.recurrent(fast=false, delay=5., poll_creek_metadata)
 
 emergency_broadcast = ingest.makeStudioSource("Emergency Broadcast", mount="/emergency", username="ebs", password=!ingest_emergency_password)
 
