@@ -921,6 +921,7 @@ end
 # Kick off polling for Creek CMS track data
 thread.run.recurrent(fast=false, delay=5., poll_creek_metadata)
 
+# Emergency Broadcast channel is inserted above other sources
 emergency_broadcast = ingest.makeStudioSource("Emergency Broadcast", mount="/emergency", username="ebs", password=!ingest_emergency_password, highPriority=true)
 
 live_broadcast = fallback(track_sensitive=false, [emergency_broadcast, dj_sources])
@@ -928,9 +929,13 @@ live_broadcast = fallback(track_sensitive=false, [emergency_broadcast, dj_source
 # From the Azuracast harbor config, add 'is_live' metadata
 # Unlike the Azuracast default, we don't add default text.
 def insert_live_metadata(m) =
+  ignore(m)
   [("is_live", "true")]
 end
 live_broadcast = map_metadata(insert_live_metadata, live_broadcast)
+
+# Reapply the crossfader?
+live_broadcast = cross(minimum=0., duration=3.00, live_aware_crossfade, live_broadcast)
 
 radio = fallback(track_sensitive=false, [live_broadcast, radio])
 
