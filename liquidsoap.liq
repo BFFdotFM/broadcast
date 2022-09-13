@@ -465,101 +465,6 @@ end
 
 radio = cross(minimum=0., duration=3.00, live_aware_crossfade, radio)
 
-# Custom Configuration (Specified in Station Profile)
-### BEGIN: BFF.fm drop default metadata  ###
-
-# Custom Configuration (Specified in Station Profile)
-# Drop the default Azuracast fallback metadata
-radio = drop_metadata(radio)
-
-### END: BFF.fm drop default metadata  ###
-
-# DJ Authentication
-last_authenticated_dj = ref("")
-live_dj = ref("")
-
-def dj_auth(login) =
-    auth_info =
-        if (login.user == "source" or login.user == "") and (string.match(pattern="(:|,)+", login.password)) then
-            auth_string = string.split(separator="(:|,)", login.password)
-            {user = list.nth(default="", auth_string, 0),
-            password = list.nth(default="", auth_string, 2)}
-        else
-            {user = login.user, password = login.password}
-        end
-
-    response = azuracast_api_call(
-        timeout_ms=5000,
-        "auth",
-        json.stringify(auth_info)
-    )
-
-    if (response == "true") then
-        last_authenticated_dj := auth_info.user
-        true
-    else
-        false
-    end
-end
-
-def live_connected(header) =
-    dj = !last_authenticated_dj
-    log("DJ Source connected! Last authenticated DJ: #{dj} - #{header}")
-
-    live_enabled := true
-    live_dj := dj
-
-    _ = azuracast_api_call(
-        timeout_ms=5000,
-        "djon",
-        json.stringify({user = dj})
-    )
-end
-
-def live_disconnected() =
-    _ = azuracast_api_call(
-        timeout_ms=5000,
-        "djoff",
-        json.stringify({user = !live_dj})
-    )
-
-    live_enabled := false
-    live_dj := ""
-end
-
-# A Pre-DJ source of radio that can be broadcast if needed',
-radio_without_live = radio
-ignore(radio_without_live)
-
-# Live Broadcasting
-live = input.harbor("/", id = "input_streamer", port = 8005, auth = dj_auth, icy = true, icy_metadata_charset = "UTF-8", metadata_charset = "UTF-8", on_connect = live_connected, on_disconnect = live_disconnected, buffer = 5.00, max = 10.00)
-
-def insert_missing(m) =
-    if m == [] then
-        [("title", "Live Broadcast"), ("is_live", "true")]
-    else
-        [("is_live", "true")]
-    end
-end
-live = map_metadata(insert_missing, live)
-
-radio = fallback(id="live_fallback", replay_metadata=true, [live, radio])
-
-# Skip non-live track when live DJ goes live.
-def check_live() =
-    if live.is_ready() then
-        if not !to_live then
-            to_live := true
-            radio_without_live.skip()
-        end
-    else
-        to_live := false
-    end
-end
-
-# Continuously check on live.
-radio = source.on_frame(radio, check_live)
-
 # Allow for Telnet-driven insertion of custom metadata.
 radio = server.insert_metadata(id="custom_metadata", radio)
 
@@ -617,12 +522,19 @@ radio = metadata.map(update=false, handle_jingle_mode, radio)
 # Custom Configuration (Specified in Station Profile)
 ### BEGIN: BFF.fm Ingest Harbors ###
 
-# Reset the above and remove the default Azuracast autodj mount from the
-ignore(radio)
+# A Pre-DJ source of radio that can be broadcast if needed
+radio_without_live = radio
+ignore(radio_without_live)
 
-# If running an automation playlist through AzuraCast, assign `radio_without_live` instead
+# To reset Azuracast default AutoDJ, possibly reassign 'radio' here:
+#
+# Reset the above and remove the default Azuracast autodj mount
+# ignore(radio)
+# If running an automation playlist through AzuraCast while enabling AzuraCast
+# live streamer mount, assign `radio_without_live`:
+# radio = fallback(track_sensitive = false, [radio_without_live, single(id="error_jingle", "/usr/local/share/icecast/web/error.mp3")])
+# Otherwise, assign a new error MP3:
 # radio = single(id="no_broadcast", "/usr/local/share/icecast/web/error.mp3")
-radio = fallback(track_sensitive = false, [radio_without_live, single(id="error_jingle", "/usr/local/share/icecast/web/error.mp3")])
 
 # Manage Icecast input harbors remote DJs and Studios
 
@@ -782,7 +694,7 @@ def ingest.makeStudioSource(studioName, ~mount, ~username="source", ~password, ~
   end
 
   # Create an IceCast harbor for this studio
-  harbor = audio_to_stereo(input.harbor(mount, port = !ingest.icecastPort, auth = studioAuth, icy = true, icy_metadata_charset = "UTF-8", metadata_charset = "UTF-8", on_connect = connected, on_disconnect = disconnected, buffer = 10., max = 15.))
+  harbor = audio_to_stereo(input.harbor(mount, port = ingest.icecastPort, auth = studioAuth, icy = true, icy_metadata_charset = "UTF-8", metadata_charset = "UTF-8", on_connect = connected, on_disconnect = disconnected, buffer = 10., max = 15.))
   ignore(output.dummy(harbor, fallible=true))
 
   # return the source
@@ -858,7 +770,7 @@ def ingest.makeAzuraCastStreamerSource(studioName, ~mount, ~dropMetadata=false, 
     ingest.onDjConnect()
   end
 
-  harbor = audio_to_stereo(input.harbor(mount, port = !ingest.icecastPort, auth = azuracastAuth, icy = true, icy_metadata_charset = "UTF-8", metadata_charset = "UTF-8", on_connect = remote_connected, on_disconnect = remote_disconnected, buffer = 10., max = 15.))
+  harbor = audio_to_stereo(input.harbor(mount, port = ingest.icecastPort, auth = azuracastAuth, icy = true, icy_metadata_charset = "UTF-8", metadata_charset = "UTF-8", on_connect = remote_connected, on_disconnect = remote_disconnected, buffer = 10., max = 15.))
   ignore(output.dummy(harbor, fallible=true))
 
   # return the source
@@ -959,7 +871,7 @@ def ingest.makeCreekStreamerSource(studioName, ~mount, ~dropMetadata=false, ~ale
     ingest.onDjConnect()
   end
 
-  harbor = audio_to_stereo(input.harbor(mount, port = !ingest.icecastPort, auth = creekAuth, icy = true, icy_metadata_charset = "UTF-8", metadata_charset = "UTF-8", on_connect = remote_connected, on_disconnect = remote_disconnected, buffer = 10., max = 15.))
+  harbor = audio_to_stereo(input.harbor(mount, port = ingest.icecastPort, auth = creekAuth, icy = true, icy_metadata_charset = "UTF-8", metadata_charset = "UTF-8", on_connect = remote_connected, on_disconnect = remote_disconnected, buffer = 10., max = 15.))
   ignore(output.dummy(harbor, fallible=true))
 
   # return the source
@@ -979,13 +891,12 @@ dj_sources = fallback(track_sensitive=false, [
 
 # Tracking metadata
 #
-# Regardless of where our source is connected from, we treat our CMS as the canonical and only source of truth for what
-# music is being played. (Hence `dropMetadata=true` on all the Icecast ingestion above.)
+# Regardless of where our source is connected from, we treat our CMS as the canonical
+# and only source for what music is being played. (Hence `dropMetadata=true` on all the
+# Icecast ingestion above.)
 #
 # Here, we poll the CMS for track changes.
-
-creek_metadata_source = insert_metadata(dj_sources)
-dj_sources = creek_metadata_source
+dj_sources = insert_metadata(dj_sources)
 
 # For debugging purposes, we store the last unique track name, and the
 # timestamp of when it was registered
@@ -1018,7 +929,7 @@ def poll_creek_metadata() =
       last_creek_track := (playingString, now)
 
       # Chaged metadata so update source metadata as 'new track'
-      creek_metadata_source.insert_metadata(new_track=true, [("title", playingString)])
+      dj_sources.insert_metadata(new_track=true, [("title", playingString)])
 
       # Scrobble new tracks to Last.FM
       lastfm.scrobble(artist="#{onAir.artist}", album="#{onAir.album}", track="#{onAir.title}")
@@ -1045,7 +956,7 @@ def poll_creek_metadata() =
       last_creek_track := (show, now)
 
       # Update source metadata, but not as a 'track'
-      creek_metadata_source.insert_metadata(new_track=false, [("title", show)])
+      dj_sources.insert_metadata(new_track=false, [("title", show)])
 
       # Log to Slack
       slack.log(channel="now_playing", ":radio: #{show} with #{onAir.presenter ?? 'Unknown Host'}")
@@ -1059,13 +970,39 @@ def poll_creek_metadata() =
   (10.)
 end
 
+# Kick off polling for Creek CMS track data
 thread.run.recurrent(fast=false, delay=5., poll_creek_metadata)
 
 emergency_broadcast = ingest.makeStudioSource("Emergency Broadcast", mount="/emergency", username="ebs", password=!ingest_emergency_password, highPriority=true)
 
-# Add the no-ice metadata stream to the stack before the global metadata listener
-radio = fallback(track_sensitive=false, [emergency_broadcast, dj_sources, radio])
+live_broadcast = fallback(track_sensitive=false, [emergency_broadcast, dj_sources])
 
+# From the Azuracast harbor config, add 'is_live' metadata
+# Unlike the Azuracast default, we don't add default text.
+def insert_live_metadata(m) =
+  [("is_live", "true")]
+end
+live_broadcast = map_metadata(insert_live_metadata, live_broadcast)
+
+radio = fallback(track_sensitive=false, [live_broadcast, radio])
+
+# From the default Azuracast harbor behavior, trigger automation skipping
+# and set the smooth crossfading
+#
+# Skip non-live track when live DJ goes live.
+def check_live() =
+  if live_broadcast.is_ready() then
+    if not !to_live then
+      to_live := true
+      radio_without_live.skip()
+    end
+  else
+    to_live := false
+  end
+end
+radio = source.on_frame(radio, check_live)
+
+# Trigger metadata updates back to Azuracast:
 radio.on_metadata(metadata_updated)
 
 ### END: BFF.fm Ingest Harbors ###
