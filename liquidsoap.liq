@@ -222,7 +222,6 @@ def curl.fetch(~timeout_ms=2000, theUrl) =
       headers=[("User-Agent", !curl.userAgent)],
       timeout_ms=timeout_ms
     )
-    log("cURL GET: #{theUrl} - Response (#{response.status_code})")
     "#{response}"
   catch err do
     log("cURL GET: #{theUrl} - Error: #{error.kind(err)} - #{error.message(err)}")
@@ -632,15 +631,27 @@ radio = metadata.map(update=false, handle_jingle_mode, radio)
 ignore(radio)
 
 # If running an automation playlist through AzuraCast, assign `radio_without_live` instead
-radio = single(id="no_broadcast", "/usr/local/share/icecast/web/error.mp3")
+# radio = single(id="no_broadcast", "/usr/local/share/icecast/web/error.mp3")
+radio = fallback(track_sensitive = false, [radio_without_live, single(id="error_jingle", "/usr/local/share/icecast/web/error.mp3")])
 
 # Manage Icecast input harbors remote DJs and Studios
+
 let ingest = ()
 let ingest.icecastPort = icecast_port
-# Precedence needs to match the names of ingest sources created below.
-# TODO: DRY: Refactor so that this is implicit based on the create of channels below.
-let ingest.precedence = ingest_channel_precedence
+
+# Ingest precedence stacks all created HTTP harbors (by name) to create the
+# cascade by which on-air is determined:
+let ingest.precedence = ref([])
+# Active harbor connections and associated user:
 let ingest.connections = ref([])
+
+def ingest.registerSource(sourceName, highPriority=false) =
+  if (highPriority) then
+    ingest.precedence := list.add(sourceName, !ingest.precedence)
+  else
+    ingest.precedence := list.append(!ingest.precedence, [sourceName])
+  end
+end
 
 # Is a named studio currently connected?
 def ingest.isConnected(studio) =
@@ -659,6 +670,23 @@ def ingest.djFor(studio) =
   list.assoc(default="", studio, !ingest.connections)
 end
 
+def ingest.currentSource() =
+  # Get the highest precedence source currently connected
+  def getSource(current, source) =
+    if (current != "") then
+      current
+    else
+      next = list.assoc(default="", source, !ingest.connections)
+      if (next != "") then
+        source
+      else
+        ""
+      end
+    end
+  end
+  list.fold(getSource, "", !ingest.precedence)
+end
+
 # Who is the current on-air DJ, based on studio precedence?
 def ingest.currentDj() =
   # Get the DJ for the highest precedence studio that has a DJ
@@ -674,15 +702,16 @@ end
 
 # Global “on connection” handler
 def ingest.onDjConnect() =
+  source_name = ingest.currentSource()
   dj_name = ingest.currentDj()
+
   if (dj_name != "") then
     _ = azuracast_api_call(
       timeout_ms=5000,
       "djon",
       json.stringify({user = dj_name})
     )
-    #log.debug("AzuraCast remote DJ connected response: #{ret}")
-    slack.log(":rotating_light: ON AIR: *#{dj_name}*")
+    slack.log(":rotating_light: ON AIR: #{source_name}/*#{dj_name}*")
   end
 end
 
@@ -713,7 +742,11 @@ end
 
 # Create a studio source
 # — These sources have a single fixed password baked into the configuration.
-def ingest.makeStudioSource(studioName, ~mount, ~username="source", ~password, ~dropMetadata=false, ~alertOnDisconnect=false) =
+def ingest.makeStudioSource(studioName, ~mount, ~username="source", ~password, ~dropMetadata=false, ~alertOnDisconnect=false, ~highPriority=false) =
+
+  # Register source
+  ingest.registerSource(studioName, highPriority)
+
   def studioAuth(login) =
     auth_info = ingest.parseCredentials(login)
 
@@ -722,7 +755,7 @@ def ingest.makeStudioSource(studioName, ~mount, ~username="source", ~password, ~
       log.info("Studio connected: #{username}")
       true
     else
-      ingest.connections := list.assoc.remove(studioName, !ingest.connections)
+      ingest.connections := list.assoc.remove.all(studioName, !ingest.connections)
       log.important("Studio authentication failed: #{username}")
       false
     end
@@ -752,7 +785,7 @@ def ingest.makeStudioSource(studioName, ~mount, ~username="source", ~password, ~
     ingest.onDjDisconnect()
 
     # Clear studio DJ variables
-    ingest.connections := list.assoc.remove(studioName, !ingest.connections)
+    ingest.connections := list.assoc.remove.all(studioName, !ingest.connections)
 
     # Reset metadata for other remaining connected streams
     ingest.onDjConnect()
@@ -771,7 +804,11 @@ def ingest.makeStudioSource(studioName, ~mount, ~username="source", ~password, ~
 end
 
 # Create an remote DJ source authenticated against AzuraCast's 'streamers' database
-def ingest.makeAzuraCastStreamerSource(studioName, ~mount, ~dropMetadata=false) =
+def ingest.makeAzuraCastStreamerSource(studioName, ~mount, ~dropMetadata=false, ~highPriority=false) =
+
+  # Register source
+  ingest.registerSource(studioName, highPriority)
+
   # Keep track of who the last DJ was so we can monitor when it changes.
   lastDj = ref("")
 
@@ -825,7 +862,7 @@ def ingest.makeAzuraCastStreamerSource(studioName, ~mount, ~dropMetadata=false) 
     ingest.onDjDisconnect()
 
     # Clear studio DJ variables
-    ingest.connections := list.assoc.remove(studioName, !ingest.connections)
+    ingest.connections := list.assoc.remove.all(studioName, !ingest.connections)
 
     # Reset metadata for other remaining connected streams
     ingest.onDjConnect()
@@ -843,7 +880,11 @@ def ingest.makeAzuraCastStreamerSource(studioName, ~mount, ~dropMetadata=false) 
 end
 
 # Create an remote DJ source authenticated against Creek's user database
-def ingest.makeCreekStreamerSource(studioName, ~mount, ~dropMetadata=false, , ~alertOnDisconnect=false, ~authEndpoint="/api/auth/stream") =
+def ingest.makeCreekStreamerSource(studioName, ~mount, ~dropMetadata=false, ~alertOnDisconnect=false, ~authEndpoint="/api/auth/stream", ~highPriority=false) =
+
+  # Register source
+  ingest.registerSource(studioName, highPriority)
+
   # Keep track of who the last DJ was so we can monitor when it changes.
   lastDj = ref("")
 
@@ -883,7 +924,7 @@ def ingest.makeCreekStreamerSource(studioName, ~mount, ~dropMetadata=false, , ~a
       log.important("Creek DJ #{authResult.username} authentication failed: #{authResult.reason}")
     end
 
-    result.authenticated
+    authResult.authenticated
   end
 
   def remote_connected(header) =
@@ -922,7 +963,7 @@ def ingest.makeCreekStreamerSource(studioName, ~mount, ~dropMetadata=false, , ~a
     ingest.onDjDisconnect()
 
     # Clear studio DJ variables
-    ingest.connections := list.assoc.remove(studioName, !ingest.connections)
+    ingest.connections := list.assoc.remove.all(studioName, !ingest.connections)
 
     # Reset metadata for other remaining connected streams
     ingest.onDjConnect()
@@ -942,8 +983,8 @@ end
 dj_sources = fallback(track_sensitive=false, [
   ingest.makeAzuraCastStreamerSource("Remote DJ", mount="/dj", dropMetadata=true),
   ingest.makeStudioSource("Studio F DJ", mount="/ferry", password=!ingest_studio_a_password, dropMetadata=true),
-  ingest.makeStudioSource("Studio A DJ", mount="/studio", password=!ingest_studio_f_password, dropMetadata=true),
-  ingest.makeStudioSource("Studio Automation", mount="/automation", password=!ingest_automation_password, dropMetadata=true)
+  ingest.makeStudioSource("Studio A DJ", mount="/studio", password=!ingest_studio_f_password, alertOnDisconnect=true, dropMetadata=true),
+  ingest.makeStudioSource("Studio Automation", mount="/automation", password=!ingest_automation_password, alertOnDisconnect=true, dropMetadata=true)
 ])
 
 # Tracking metadata
@@ -1030,10 +1071,12 @@ end
 
 thread.run.recurrent(fast=false, delay=5., poll_creek_metadata)
 
-emergency_broadcast = ingest.makeStudioSource("Emergency Broadcast", mount="/emergency", username="ebs", password=!ingest_emergency_password)
+emergency_broadcast = ingest.makeStudioSource("Emergency Broadcast", mount="/emergency", username="ebs", password=!ingest_emergency_password, highPriority=true)
 
 # Add the no-ice metadata stream to the stack before the global metadata listener
 radio = fallback(track_sensitive=false, [emergency_broadcast, dj_sources, radio])
+
+radio.on_metadata(metadata_updated)
 
 ### END: BFF.fm Ingest Harbors ###
 
