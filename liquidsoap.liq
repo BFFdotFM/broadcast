@@ -54,7 +54,7 @@ user_agent_url = ref("https://bff.fm")
 ### END: BFF.fm Configuration and Secrets ###
 
 init.daemon.set(false)
-init.daemon.pidfile.path.set("/var/azuracast/stations/bff.fm_azupgrade_station/config/liquidsoap.pid")
+init.daemon.pidfile.path.set("/var/azuracast/stations/bff.fm_station_upgrade_testbed/config/liquidsoap.pid")
 
 log.stdout.set(true)
 log.file.set(false)
@@ -63,14 +63,14 @@ settings.server.log.level.set(4)
 
 settings.server.socket.set(true)
 settings.server.socket.permissions.set(0o660)
-settings.server.socket.path.set("/var/azuracast/stations/bff.fm_azupgrade_station/config/liquidsoap.sock")
+settings.server.socket.path.set("/var/azuracast/stations/bff.fm_station_upgrade_testbed/config/liquidsoap.sock")
 
 settings.harbor.bind_addrs.set(["0.0.0.0"])
 
 settings.tag.encodings.set(["UTF-8","ISO-8859-1"])
 settings.encoder.metadata.export.set(["artist","title","album","song"])
 
-setenv("TZ", "UTC")
+setenv("TZ", "America/Los_Angeles")
 
 autodj_is_loading = ref(true)
 ignore(autodj_is_loading)
@@ -112,7 +112,7 @@ def azuracast_api_call(~timeout_ms=2000, url, payload) =
     end
 end
 
-station_media_dir = "/var/azuracast/stations/bff.fm_azupgrade_station/media"
+station_media_dir = "/var/azuracast/stations/bff.fm_station_upgrade_testbed/media"
 def azuracast_media_protocol(~rlog=_,~maxtime=_,arg) =
     ["#{station_media_dir}/#{arg}"]
 end
@@ -383,24 +383,9 @@ def tunein.nonMusic(~attribution, ~name) =
   ])
 end
 
-## Twitter Support
-# Support composing Tweets
-
-let twitter = ()
-let twitter.apiBase = ref("https://api.twitter.com")
-let twitter.consumeKey = ref("")
-let twitter.consumerSecret = ref("")
-let twitter.userToken = ref("")
-let twitter.userTokenSecret = ref("")
-
-def twitter.tweet(message) =
-  log.info("Twitter: Not Impemented Yet")
-  "#{message}"
-end
-
 ### END: BFF.fm Library Code ###
 
-playlist_default = playlist(id="playlist_default",mime_type="audio/x-mpegurl",mode="randomize",reload_mode="watch","/var/azuracast/stations/bff.fm_azupgrade_station/playlists/playlist_default.m3u")
+playlist_default = playlist(id="playlist_default",mime_type="audio/x-mpegurl",mode="randomize",reload_mode="watch","/var/azuracast/stations/bff.fm_station_upgrade_testbed/playlists/playlist_default.m3u")
 playlist_default = cue_cut(id="cue_playlist_default", playlist_default)
 
 # Standard Playlists
@@ -592,10 +577,6 @@ radio = server.insert_metadata(id="custom_metadata", radio)
 # Apply amplification metadata (if supplied)
 radio = amplify(override="liq_amplify", 1., radio)
 
-# Normalization and Compression
-radio = normalize(target = 0., window = 0.03, gain_min = -16., gain_max = 0., radio)
-radio = compress.exponential(radio, mu = 1.0)
-
 radio = fallback(id="safe_fallback", track_sensitive = false, [radio, single(id="error_jingle", "/usr/local/share/icecast/web/error.mp3")])
 
 # Send metadata changes back to AzuraCast
@@ -732,7 +713,7 @@ end
 
 # Create a studio source
 # — These sources have a single fixed password baked into the configuration.
-def ingest.makeStudioSource(studioName, ~mount, ~username="source", ~password, ~dropMetadata=false) =
+def ingest.makeStudioSource(studioName, ~mount, ~username="source", ~password, ~dropMetadata=false, ~alertOnDisconnect=false) =
   def studioAuth(login) =
     auth_info = ingest.parseCredentials(login)
 
@@ -760,7 +741,14 @@ def ingest.makeStudioSource(studioName, ~mount, ~username="source", ~password, ~
   # When a studio disconnects, announce to monitoring destinations
   def disconnected() =
     log("#{studioName} disconnected!")
+
     slack.log(":end: #{studioName} disconnected (*#{ingest.djFor(studioName)}*)")
+
+    # AlertOnDisconnect sends an extra message to our #alerts channel
+    if (alertOnDisconnect) then
+      slack.log(channel="alerts", ":bangbang: #{studioName} streamer disconnected (*#{ingest.djFor(studioName)}*)")
+    end
+
     ingest.onDjDisconnect()
 
     # Clear studio DJ variables
@@ -855,37 +843,44 @@ def ingest.makeAzuraCastStreamerSource(studioName, ~mount, ~dropMetadata=false) 
 end
 
 # Create an remote DJ source authenticated against Creek's user database
-def ingest.makeCreekStreamerSource(studioName, ~mount, ~dropMetadata=false, ~authEndpoint="/api/auth/stream") =
+def ingest.makeCreekStreamerSource(studioName, ~mount, ~dropMetadata=false, , ~alertOnDisconnect=false, ~authEndpoint="/api/auth/stream") =
   # Keep track of who the last DJ was so we can monitor when it changes.
   lastDj = ref("")
 
   def creekAuth(login) =
     auth_info = ingest.parseCredentials(login)
-
     log.debug("Authenticating Creek DJ: #{auth_info.user}")
 
-    ret = bff.post(authEndpoint, data=[
+    authResponse = bff.post(authEndpoint, data=[
       ("username", auth_info.user),
       ("password", auth_info.password)
     ])
-    log.debug("Creek DJ auth response: #{ret}")
+    log.debug("Creek DJ auth response: #{authResponse}")
 
-    let json.parse result = ret
-    if (result.authenticated == true) then
-      djName = result.display_name
-      showName = result.show
-      endTime = result.end_time
+    let json.parse (authResult : {
+      authenticated: bool,
+      username: string,
+      display_name: string?,
+      show: string?,
+      start_time: string?,
+      end_time: string?,
+      reason: string?
+    }) = authResponse
 
-      lastDj := "#{djName}/#{showName} (#{auth_info.user})"
+    if (authResult.authenticated) then
+      djName = "#{authResult.display_name ?? authResult.username}"
+      showName = "#{authResult.show}"
+      endTime = "#{authResult.end_time}"
+
+      lastDj := "#{djName}/#{showName} (#{authResult.username})"
       log.debug("Set lastDj to: #{!lastDj}")
 
-      slack.log(":key: #{studioName} DJ authenticated: *#{djName}*/*#{showName}* (@#{auth_info.user})")
-      slack.log("@#{auth_info.user}} :clock10: Remember to disconnected before *#{endTime}* when #{showName} ends!")
+      slack.log(channel="stream_auth", ":key: #{studioName} DJ authenticated: *#{djName}*/*#{showName}* (@#{authResult.username})")
+      slack.log(channel="stream_auth", "@#{authResult.username}} :clock10: Remember to disconnected before *#{endTime}* when #{showName} ends!")
     else
       # Auth failed, get reason and push to Slack:
-      reason = result.reason
-      slack.log(":octagonal_sign: #{studioName} DJ authentication failed: Creek user @#{auth_info.user} not authenticated because: *#{reason}*")
-      log.important("Creek DJ #{auth_info.user} authentication failed: #{reason}")
+      slack.log(channel="stream_auth", ":octagonal_sign: #{studioName} DJ authentication failed: Creek user @#{authResult.username} not authenticated because: *#{authResult.reason}*")
+      log.important("Creek DJ #{authResult.username} authentication failed: #{authResult.reason}")
     end
 
     result.authenticated
@@ -918,6 +913,11 @@ def ingest.makeCreekStreamerSource(studioName, ~mount, ~dropMetadata=false, ~aut
 
     log("Remote DJ source disconnected! Was: #{dj}")
     slack.log(":end: #{studioName} disconnected (*#{dj}* :micdrop:)")
+
+    # AlertOnDisconnect sends an extra message to our #alerts channel
+    if (alertOnDisconnect) then
+      slack.log(channel="alerts", ":bangbang: #{studioName} streamer disconnected (*#{ingest.djFor(studioName)}*)")
+    end
 
     ingest.onDjDisconnect()
 
@@ -1038,7 +1038,7 @@ radio = fallback(track_sensitive=false, [emergency_broadcast, dj_sources, radio]
 ### END: BFF.fm Ingest Harbors ###
 
 # Local Broadcasts
-output.icecast(%mp3(samplerate=44100, stereo=true, bitrate=128, id3v2=true), id="local_1", host = "127.0.0.1", port = 8000, password = "(PASSWORD)", mount = "/radio.mp3", name = "BFF.fm Azupgrade Station", description = "Testing the Azuracast Upgrade", genre = "Unclassifiable", url = "https://bff.fm", public = false, encoding = "UTF-8", radio)
+output.icecast(%mp3(samplerate=44100, stereo=true, bitrate=128, id3v2=true), id="local_1", host = "127.0.0.1", port = 8000, password = "(PASSWORD)", mount = "/radio.mp3", name = "BFF.fm Station Upgrade Testbed", description = "Liquidsoap 1.4 - 2.1 upgrade", genre = "Unclassifiable", url = "https://bff.fm", public = false, encoding = "UTF-8", radio)
 
 # Remote Relays
 
