@@ -1086,8 +1086,8 @@ output.icecast(%mp3(samplerate=44100, stereo=true, bitrate=128, id3v2=true), id=
 # Remote Relays
 
 # Custom Configuration (Specified in Station Profile)
-# BEGIN: BFF.fm Slack Status Output
 
+# BEGIN: BFF.fm Startup/Shutdown Notices
 def start_notices() =
   log("Liquidsoap started.")
   slack.log(":small_red_triangle: Liquidsoap started.")
@@ -1101,5 +1101,4 @@ def shutdown_notices() =
 end
 
 on_shutdown(shutdown_notices)
-
-# END: BFF.fm Slack Status Output
+# END: BFF.fm Startup/Shutdown Notices
