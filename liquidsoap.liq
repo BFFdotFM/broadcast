@@ -43,6 +43,8 @@ tunein_partner_id = ref("(PASSWORD)")
 tunein_partner_key =  ref("(PASSWORD)")
 tunein_station_id = ref("(PASSWORD)")
 
+### END BFF.fm Configuration and Secrets ###
+
 init.daemon.set(false)
 init.daemon.pidfile.path.set("/var/azuracast/stations/bff.fm_station_upgrade_testbed/config/liquidsoap.pid")
 
@@ -379,60 +381,6 @@ playlist_default = cue_cut(id="cue_playlist_default", playlist_default)
 
 # Standard Playlists
 radio = random(id="standard_playlists", weights=[3], [playlist_default])
-
-# AutoDJ Next Song Script
-def autodj_next_song() =
-    response = azuracast_api_call(
-        "nextsong",
-        ""
-    )
-    if (response == "") or (response == "false") then
-        null()
-    else
-        r = request.create(response)
-        if request.resolve(r) then
-            r
-        else
-            null()
-       end
-    end
-end
-
-# Delayed ping for AutoDJ Next Song
-def wait_for_next_song(autodj)
-    autodj_ping_attempts := !autodj_ping_attempts + 1
-
-    if source.is_ready(autodj) then
-        log("AutoDJ is ready!")
-        autodj_is_loading := false
-        -1.0
-    elsif !autodj_ping_attempts > 200 then
-        log("AutoDJ could not be initialized within the specified timeout.")
-        autodj_is_loading := false
-        -1.0
-    else
-        0.5
-    end
-end
-
-dynamic = request.dynamic(id="next_song", timeout=20., retry_delay=10., autodj_next_song)
-dynamic = cue_cut(id="cue_next_song", dynamic)
-
-dynamic_startup = fallback(
-    id = "dynamic_startup",
-    track_sensitive = false,
-    [
-        dynamic,
-        source.available(
-            blank(id = "autodj_startup_blank", duration = 120.),
-            predicate.activates({!autodj_is_loading})
-        )
-    ]
-)
-radio = fallback(id="autodj_fallback", track_sensitive = true, [dynamic_startup, radio])
-
-ref_dynamic = ref(dynamic);
-thread.run.recurrent(delay=0.25, { wait_for_next_song(!ref_dynamic) })
 
 requests = request.queue(id="requests")
 requests = cue_cut(id="cue_requests", requests)
