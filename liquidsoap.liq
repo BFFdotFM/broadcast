@@ -4,22 +4,28 @@
 
 # Custom Configuration (Specified in Station Profile)
 ### BEGIN: BFF.fm Configuration and Secrets ###
-### Secrets should not be checked in. Duh.
+
+# General Config
+user_agent_name = ref("BFF.fm Broadcast System")
+user_agent_url = ref("https://bff.fm")
 
 # Creek CMS integration
 creek_app_id = ref("fm.bff.example")
 creek_api_base = ref("https://")
 creek_public_base = ref("https://")
 
-# Harbor Ingest configuration
-icecast_port = ref(8005)
+## Ingestion harbor configuration
+icecast_port = 8005
 
+### Secrets should not be checked in. Duh. ###
+
+## Fixed passwords for studio Icecast streams
 ingest_studio_a_password = ref("(PASSWORD)")
 ingest_studio_f_password = ref("(PASSWORD)")
 ingest_automation_password = ref("(PASSWORD)")
 ingest_emergency_password = ref("(PASSWORD)")
 
-# Configure Last.FM scrobbling
+## Configure Last.FM scrobbling
 lastfm_app_id = ref("(PASSWORD)")
 lastfm_app_secret = ref("(PASSWORD)")
 lastfm_session_token = ref("(PASSWORD)") # @bffdotfm
@@ -36,11 +42,6 @@ slack_named_channels = ref([
 tunein_partner_id = ref("(PASSWORD)")
 tunein_partner_key =  ref("(PASSWORD)")
 tunein_station_id = ref("(PASSWORD)")
-
-user_agent_name = ref("BFF.fm Broadcast System")
-user_agent_url = ref("https://bff.fm")
-
-### END: BFF.fm Configuration and Secrets ###
 
 init.daemon.set(false)
 init.daemon.pidfile.path.set("/var/azuracast/stations/bff.fm_station_upgrade_testbed/config/liquidsoap.pid")
