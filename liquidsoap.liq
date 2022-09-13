@@ -14,17 +14,6 @@ creek_public_base = ref("https://")
 # Harbor Ingest configuration
 icecast_port = ref(8005)
 
-# Ingest precedence stacks all created HTTP harbors (by name) to create the cascade by which on-air is determined.
-# The names need to match the names of ingest sources created later.
-# TODO: DRY: Find a clean way to build this list implicitly
-ingest_channel_precedence = ref([
-  "Emergency Broadcast",
-  "Remote DJ",
-  "Studio F",
-  "Studio A",
-  "Studio Automation"
-])
-
 ingest_studio_a_password = ref("(PASSWORD)")
 ingest_studio_f_password = ref("(PASSWORD)")
 ingest_automation_password = ref("(PASSWORD)")
@@ -1086,8 +1075,7 @@ output.icecast(%mp3(samplerate=44100, stereo=true, bitrate=128, id3v2=true), id=
 # Remote Relays
 
 # Custom Configuration (Specified in Station Profile)
-
-# BEGIN: BFF.fm Startup/Shutdown Notices
+### BEGIN: BFF.fm Startup/Shutdown Notices
 def start_notices() =
   log("Liquidsoap started.")
   slack.log(":small_red_triangle: Liquidsoap started.")
@@ -1101,4 +1089,4 @@ def shutdown_notices() =
 end
 
 on_shutdown(shutdown_notices)
-# END: BFF.fm Startup/Shutdown Notices
+### END: BFF.fm Startup/Shutdown Notices
