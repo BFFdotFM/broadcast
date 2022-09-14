@@ -34,8 +34,6 @@ icecast_password = ref("(PASSWORD)")
 # Our studio connections use a single client ID and so have fixed passwords hard-coded
 # into this config, rather than authenticating against Creek.
 ingest_studio_a_password = ref("(PASSWORD)")
-ingest_studio_f_password = ref("(PASSWORD)")
-ingest_automation_password = ref("(PASSWORD)")
 ingest_emergency_password = ref("(PASSWORD)")
 
 ## Last.FM scrobbling
@@ -926,7 +924,7 @@ end
 dj_sources = fallback(track_sensitive=false, [
   ingest.makeCreekStreamerSource("Remote DJ", mount="/dj", dropMetadata=true),
   ingest.makeAzuraCastStreamerSource("Remote DJ", mount="/azdj", dropMetadata=true),
-  ingest.makeStudioSource("Studio A DJ", mount="/studio", password=!ingest_studio_f_password, alertOnDisconnect=true, dropMetadata=true)
+  ingest.makeStudioSource("Studio A DJ", mount="/studio", password=!ingest_studio_a_password, alertOnDisconnect=true, dropMetadata=true)
 ])
 
 # Tracking metadata
