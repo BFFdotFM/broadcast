@@ -82,7 +82,7 @@ tunein_station_id = ref("(PASSWORD)")
 ### END BFF.fm Configuration and Secrets ###
 
 init.daemon.set(false)
-init.daemon.pidfile.path.set("/var/azuracast/stations/bff.fm_station_upgrade_testbed/config/liquidsoap.pid")
+init.daemon.pidfile.path.set("/var/azuracast/stations/example/config/liquidsoap.pid")
 
 log.stdout.set(true)
 log.file.set(false)
@@ -91,7 +91,7 @@ settings.server.log.level.set(4)
 
 settings.server.socket.set(true)
 settings.server.socket.permissions.set(0o660)
-settings.server.socket.path.set("/var/azuracast/stations/bff.fm_station_upgrade_testbed/config/liquidsoap.sock")
+settings.server.socket.path.set("/var/azuracast/stations/example/config/liquidsoap.sock")
 
 settings.harbor.bind_addrs.set(["0.0.0.0"])
 
@@ -140,7 +140,7 @@ def azuracast_api_call(~timeout_ms=2000, url, payload) =
     end
 end
 
-station_media_dir = "/var/azuracast/stations/bff.fm_station_upgrade_testbed/media"
+station_media_dir = "/var/azuracast/stations/example/media"
 def azuracast_media_protocol(~rlog=_,~maxtime=_,arg) =
     ["#{station_media_dir}/#{arg}"]
 end
