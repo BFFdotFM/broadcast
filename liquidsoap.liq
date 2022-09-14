@@ -804,10 +804,20 @@ def ingest.makeAzuraCastStreamerSource(studioName, ~mount, ~dropMetadata=false, 
 end
 
 # Create an remote DJ source authenticated against Creek's user database
-def ingest.makeCreekStreamerSource(studioName, ~mount, ~dropMetadata=false, ~alertOnDisconnect=false, ~authEndpoint="/api/auth/stream", ~highPriority=false) =
+def ingest.makeCreekStreamerSource(
+  studioName,
+  ~mount,
+  ~dropMetadata=false,
+  ~alertOnDisconnect=false,
+  ~authEndpoint="auth/stream",
+  ~highPriority=false,
+  ~productionEndpoint=true
+) =
 
   # Register source
-  ingest.registerSource(studioName, highPriority)
+  if (productionEndpoint) then
+    ingest.registerSource(studioName, highPriority)
+  end
 
   # Keep track of who the last DJ was so we can monitor when it changes.
   lastDj = ref("")
@@ -841,10 +851,10 @@ def ingest.makeCreekStreamerSource(studioName, ~mount, ~dropMetadata=false, ~ale
       log.debug("Set lastDj to: #{!lastDj}")
 
       slack.log(channel="stream_auth", ":key: #{studioName} DJ authenticated: *#{djName}*/*#{showName}* (@#{authResult.username})")
-      slack.log(channel="stream_auth", "@#{authResult.username}} :clock10: Remember to disconnected before *#{endTime}* when #{showName} ends!")
+      slack.log(channel="stream_auth", "<@#{authResult.username}> :clock10: Remember to disconnect before *#{timestamp.friendly(endTime)}* when #{showName} ends!")
     else
       # Auth failed, get reason and push to Slack:
-      slack.log(channel="stream_auth", ":octagonal_sign: #{studioName} DJ authentication failed: Creek user @#{authResult.username} not authenticated because: *#{authResult.reason}*")
+      slack.log(channel="stream_auth", "<@#{authResult.username}> :octagonal_sign: #{studioName} authentication failed: Creek user @#{authResult.username} not authenticated because: *#{authResult.reason}*")
       log.important("Creek DJ #{authResult.username} authentication failed: #{authResult.reason}")
     end
 
@@ -853,28 +863,33 @@ def ingest.makeCreekStreamerSource(studioName, ~mount, ~dropMetadata=false, ~ale
 
   def remote_connected(header) =
     dj = !lastDj
-    log.debug("Adding (#{studioName}, #{dj}) pair to active connections")
-    ingest.connections := list.add((studioName, dj), !ingest.connections)
 
-    def listToString(str, item) =
-      str ^ "#{fst(item)} => #{snd(item)}"
+    # Only record login in connection pool if this is a production endpoint
+    if (productionEndpoint) then
+      log.debug("Adding (#{studioName}, #{dj}) pair to active connections")
+      ingest.connections := list.add((studioName, dj), !ingest.connections)
+      def listToString(str, item) =
+        str ^ "#{fst(item)} => #{snd(item)}"
+      end
+      connectionsDebug = list.fold(listToString, "", !ingest.connections)
+      log.debug("Connections After Add: #{connectionsDebug}")
     end
-    connectionsDebug = list.fold(listToString, "", !ingest.connections)
-    log.debug("Connections After Add: #{connectionsDebug}")
 
     log.info("#{studioName} connected! DJ: #{dj} - #{header}")
 
     # Announce source connection
-    slack.log(":zap: #{studioName} source connected (*#{ingest.djFor(studioName)}*)")
+    slack.log(":zap: #{studioName} source connected (*#{dj}*)")
 
     # Trigger global connection handler, which will update on-air metadata if
     # this source is top of the precedence stack
-    ingest.onDjConnect()
+    if (productionEndpoint) then
+      ingest.onDjConnect()
+    end
   end
 
   def remote_disconnected() =
     log.debug("Remote Disconnected")
-    dj = ingest.djFor(studioName)
+    dj = !lastDj
 
     log("Remote DJ source disconnected! Was: #{dj}")
     slack.log(":end: #{studioName} disconnected (*#{dj}* :micdrop:)")
@@ -884,13 +899,15 @@ def ingest.makeCreekStreamerSource(studioName, ~mount, ~dropMetadata=false, ~ale
       slack.log(channel="alerts", ":bangbang: #{studioName} streamer disconnected (*#{ingest.djFor(studioName)}*)")
     end
 
-    ingest.onDjDisconnect()
+    if (productionEndpoint) then
+      ingest.onDjDisconnect()
 
-    # Clear studio DJ variables
-    ingest.connections := list.assoc.remove.all(studioName, !ingest.connections)
+      # Clear studio DJ variables
+      ingest.connections := list.assoc.remove.all(studioName, !ingest.connections)
 
-    # Reset metadata for other remaining connected streams
-    ingest.onDjConnect()
+      # Reset metadata for other remaining connected streams
+      ingest.onDjConnect()
+    end
   end
 
   harbor = audio_to_stereo(input.harbor(mount, port = ingest.icecastPort, auth = creekAuth, icy = true, icy_metadata_charset = "UTF-8", metadata_charset = "UTF-8", on_connect = remote_connected, on_disconnect = remote_disconnected, buffer = 10., max = 15.))
@@ -1032,6 +1049,23 @@ radio = source.on_frame(radio, check_live)
 # Trigger metadata updates back to Azuracast:
 radio.on_metadata(metadata_updated)
 
+## Create Creek Authentication test Harbor
+
+test_dj = ingest.makeCreekStreamerSource("Creek DJ Auth Tester", mount="/test", dropMetadata=true, authEndpoint="auth/stream/test", productionEndpoint=false)
+test_dj = fallback(track_sensitive=false, [test_dj, single(!mp3_test_feed), default_error_source])
+ignore(output.dummy(test_dj, fallible=true))
+output.icecast(%mp3(samplerate=44100, stereo=true, bitrate=128, id3v2=true),
+  host = "127.0.0.1", port = 8000, password = !icecast_password,
+  mount = "/test.mp3",
+  name = "BFF.fm Broadcast System Test Channel",
+  description = "For DJs to test their Icecast configurations",
+  genre = "Unclassifiable",
+  url = !user_agent_url,
+  public = false,
+  encoding = "UTF-8",
+  test_dj
+)
+
 ### END: BFF.fm Ingest Harbors ###
 
 # Local Broadcasts
@@ -1041,6 +1075,8 @@ output.icecast(%mp3(samplerate=44100, stereo=true, bitrate=128, id3v2=true), id=
 
 # Custom Configuration (Specified in Station Profile)
 ### BEGIN: BFF.fm Startup/Shutdown Notices
+## After: Remote Relays
+
 def start_notices() =
   log("Liquidsoap started.")
   slack.log(":small_red_triangle: Liquidsoap started.")
