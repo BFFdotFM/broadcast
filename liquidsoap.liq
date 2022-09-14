@@ -163,7 +163,7 @@ let timestamp = ()
 
 # Default to the system timestamp and 'now'
 def timestamp.custom(format="%T", datetime="now") =
-  list.hd(default="", process.read.lines(env=[("TZ", ":America/Los_Angeles"), ("FORMAT", format), ("DT", datetime)], "date -d$DT +$FORMAT"))
+  list.hd(default="", process.read.lines(env=[("TZ", ":America/Los_Angeles"), ("FORMAT", format), ("DT", datetime)], "date -d\"$DT\" +\"$FORMAT\""))
 end
 
 # e.g. 20:45:23
