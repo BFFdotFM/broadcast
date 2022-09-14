@@ -534,20 +534,29 @@ radio = metadata.map(update=false, handle_jingle_mode, radio)
 
 # Custom Configuration (Specified in Station Profile)
 ### BEGIN: BFF.fm Ingest Harbors ###
+## After: Azuracast autoDJ setup, `radio = metadata.map(...)`
 
-# A Pre-DJ source of radio that can be broadcast if needed
+# A Pre-DJ source of radio powered by the Azuracast automation system
+# that can be broadcast as fallback when needed.
+#
+# Since we've had issues with volume matching and falling back when clients
+# connections are unreliable, we just broadcast a silent at the present time.
+# At some point, we'll properly figure out how to work with Liquidsoap scheduling
+# and/or silence detection to fallback gracefully.
 radio_without_live = radio
 ignore(radio_without_live)
 
-# To reset Azuracast default AutoDJ, possibly reassign 'radio' here:
+# To bypass Azuracast AutoDJ, reassign 'radio' here:
 #
-# Reset the above and remove the default Azuracast autodj mount
 # ignore(radio)
 # If running an automation playlist through AzuraCast while enabling AzuraCast
 # live streamer mount, assign `radio_without_live`:
-# radio = fallback(track_sensitive = false, [radio_without_live, single(id="error_jingle", "/usr/local/share/icecast/web/error.mp3")])
+#
+# radio = fallback(track_sensitive = false, [radio_without_live, default_error_source])
+#
 # Otherwise, assign a new error MP3:
-# radio = single(id="no_broadcast", "/usr/local/share/icecast/web/error.mp3")
+#
+# radio = default_error_source
 
 # Manage Icecast input harbors remote DJs and Studios
 
@@ -559,6 +568,18 @@ let ingest.icecastPort = icecast_port
 let ingest.precedence = ref([])
 # Active harbor connections and associated user:
 let ingest.connections = ref([])
+
+# Connection debugging
+# If during development/deployment you need to see the current state of the
+# active connections list, call this function.
+def ingest.debugConnections() =
+  def listToString(str, item) =
+    str ^ "#{fst(item)} => #{snd(item)}"
+  end
+  connectionsDebug = list.fold(listToString, "", !ingest.connections)
+  log.debug("Connections: #{connectionsDebug}")
+  connectionsDebug
+end
 
 def ingest.registerSource(sourceName, highPriority=false) =
   if (highPriority) then
@@ -576,12 +597,6 @@ end
 
 # Who is connected to a named studio?
 def ingest.djFor(studio) =
-  def listToString(str, item) =
-    str ^ "#{fst(item)} => #{snd(item)}"
-  end
-  connectionsDebug = list.fold(listToString, "", !ingest.connections)
-  log.debug("Connections: #{connectionsDebug}")
-
   list.assoc(default="", studio, !ingest.connections)
 end
 
@@ -750,12 +765,6 @@ def ingest.makeAzuraCastStreamerSource(studioName, ~mount, ~dropMetadata=false, 
     dj = !lastDj
     log.debug("Adding (#{studioName}, #{dj}) pair to active connections")
     ingest.connections := list.add((studioName, dj), !ingest.connections)
-
-    def listToString(str, item) =
-      str ^ "#{fst(item)} => #{snd(item)}"
-    end
-    connectionsDebug = list.fold(listToString, "", !ingest.connections)
-    log.debug("Connections After Add: #{connectionsDebug}")
 
     log.info("#{studioName} connected! DJ: #{dj} - #{header}")
 
