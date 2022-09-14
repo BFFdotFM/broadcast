@@ -921,23 +921,24 @@ def ingest.makeCreekStreamerSource(
   end
 end
 
+# Declare current studio and stream source harbors for which track metadata will be sourced
+# from the Creek CMS API
 dj_sources = fallback(track_sensitive=false, [
-  ingest.makeAzuraCastStreamerSource("Remote DJ", mount="/dj", dropMetadata=true),
-  ingest.makeStudioSource("Studio F DJ", mount="/ferry", password=!ingest_studio_a_password, dropMetadata=true),
-  ingest.makeStudioSource("Studio A DJ", mount="/studio", password=!ingest_studio_f_password, alertOnDisconnect=true, dropMetadata=true),
-  ingest.makeStudioSource("Studio Automation", mount="/automation", password=!ingest_automation_password, alertOnDisconnect=true, dropMetadata=true)
+  ingest.makeCreekStreamerSource("Remote DJ", mount="/dj", dropMetadata=true),
+  ingest.makeAzuraCastStreamerSource("Remote DJ", mount="/azdj", dropMetadata=true),
+  ingest.makeStudioSource("Studio A DJ", mount="/studio", password=!ingest_studio_f_password, alertOnDisconnect=true, dropMetadata=true)
 ])
 
 # Tracking metadata
 #
-# Regardless of where our source is connected from, we treat our CMS as the canonical
+# Regardless of which harbor our source is connected from, we treat our CMS as the canonical
 # and only source for what music is being played. (Hence `dropMetadata=true` on all the
 # Icecast ingestion above.)
 #
 # Here, we poll the CMS for track changes.
 dj_sources = insert_metadata(dj_sources)
 
-# For debugging purposes, we store the last unique track name, and the
+# For debugging, we store the last unique track name, and the
 # timestamp of when it was registered
 last_creek_track = ref(("BFF.fm", timestamp.hms()))
 
@@ -949,6 +950,9 @@ def poll_creek_metadata() =
   onAirJson = bff.fetch(cacheBust=true, "data/onair/now.json")
   log.debug("Fetched: #{onAirJson}")
 
+  # Just as an aside, the change in JSON parsing from Liquidsoap 1.4
+  # to 2.1 absolutely broke my brain for about half a day, but now that
+  # I see it, this is really, really nice.
   let json.parse (onAir : {
     artist: string?,
     title: string?,
@@ -959,6 +963,8 @@ def poll_creek_metadata() =
     url: string?
   }) = onAirJson
 
+  # If there's no current track (merely a show) then the artist/album/title/label
+  # data will be null.
   if (onAir.artist != null()) then
     playingString = "#{onAir.artist} - #{onAir.title}"
 
@@ -977,13 +983,13 @@ def poll_creek_metadata() =
       tunein.nowPlaying(artist="#{onAir.artist}", track="#{onAir.title}", album="#{onAir.album ?? onAir.title}")
 
       # Log to Slack
-      slack.log(channel="now_playing", ":notes: #{onAir.artist} - #{onAir.title} (#{onAir.album}) [#{onAir.label ?? 'No Label'}]")
+      slack.log(channel="now_playing", ":notes: #{onAir.artist} - #{onAir.title} (#{onAir.album}) [#{onAir.label ?? ':warning: No Label'}]")
     end
   else
     # No track: Display the current show/host/station
 
     # Generally, BFF.fm should always have a show in the schedule (even placeholders), but
-    # just in case there's a gap, or a data error, fall back to
+    # just in case there's a gap, or a data error, set up a fallback
     show = if (onAir.program != null()) then
       "#{onAir.program}"
     else
@@ -998,21 +1004,28 @@ def poll_creek_metadata() =
       dj_sources.insert_metadata(new_track=false, [("title", show)])
 
       # Log to Slack
-      slack.log(channel="now_playing", ":radio: #{show} with #{onAir.presenter ?? 'Unknown Host'}")
+      slack.log(channel="now_playing", ":radio: #{show} w/ #{onAir.presenter ?? 'Unknown Host'}")
 
       # Log Now Playing 'commerical'/non-music to TuneIn
       tunein.nonMusic(attribution=(onAir.presenter ?? "BFF.fm"), name=show)
     end
   end
 
-  # Return the timeout for the next poll
-  (10.)
+  # Return 15s timeout for the next poll
+  (15.)
 end
 
-# Kick off polling for Creek CMS track data
+# Kick off polling for initial Creek CMS track data
 thread.run.recurrent(fast=false, delay=5., poll_creek_metadata)
 
-# Emergency Broadcast channel is inserted above other sources
+## Emergency Broadcast
+# In addition to the stack of ingest harbors we created above, we create one more mount
+# point for “emergency broadcast” — it's set as high priority and will override all other
+# Icecast harbors in the stack. (highPriority=true puts it at the top of the harbor stack.)
+#
+# This is for use in the event that power to a studio goes down, or something goes wrong
+# on the main stream, or if aliens invade and we need to organize the resistance from a
+# back-up location. That sort of things.
 emergency_broadcast = ingest.makeStudioSource("Emergency Broadcast", mount="/emergency", username="ebs", password=!ingest_emergency_password, highPriority=true)
 
 live_broadcast = fallback(track_sensitive=false, [emergency_broadcast, dj_sources])
@@ -1025,15 +1038,16 @@ def insert_live_metadata(m) =
 end
 live_broadcast = map_metadata(insert_live_metadata, live_broadcast)
 
-# Reapply the crossfader?
+## Reapply crossfade to new sources.
+# TODO: This works, but is glitchy. Need to dedicate some time to properly
+# learning Liquidsoap crossfade construction, especially when we move automation
+# into the cloud.
 live_broadcast = cross(minimum=0., duration=3.00, live_aware_crossfade, live_broadcast)
 
 radio = fallback(track_sensitive=false, [live_broadcast, radio])
 
-# From the default Azuracast harbor behavior, trigger automation skipping
-# and set the smooth crossfading
-#
-# Skip non-live track when live DJ goes live.
+# From the default Azuracast harbor behavior, trigger automation track skipping
+# when going live.
 def check_live() =
   if live_broadcast.is_ready() then
     if not !to_live then
@@ -1050,7 +1064,11 @@ radio = source.on_frame(radio, check_live)
 radio.on_metadata(metadata_updated)
 
 ## Create Creek Authentication test Harbor
-
+# This dedicated harbor (and output) provides a channel for DJs to activate an
+# icecast client and verify their user/pass credentials are being handled correctly.
+#
+# The production auth endpoint in Creek enforces the user's show schedule time, whereas
+# the /test mount can be used any time.
 test_dj = ingest.makeCreekStreamerSource("Creek DJ Auth Tester", mount="/test", dropMetadata=true, authEndpoint="auth/stream/test", productionEndpoint=false)
 test_dj = fallback(track_sensitive=false, [test_dj, single(!mp3_test_feed), default_error_source])
 ignore(output.dummy(test_dj, fallible=true))
