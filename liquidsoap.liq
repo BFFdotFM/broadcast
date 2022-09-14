@@ -458,6 +458,14 @@ end
 
 add_skip_command(radio)
 
+# Custom Configuration (Specified in Station Profile)
+### BEGIN: BFF.fm Hardcoded Sources
+## After: `add_skip_command(radio)`
+
+default_error_source = fallback(track_sensitive = false, [single(!mp3_technical_difficulties), single("/usr/local/share/icecast/web/error.mp3")])
+
+### END: BFF.fm Hardcoded Sources
+
 def live_aware_crossfade(old, new) =
     if !to_live then
         # If going to the live show, play a simple sequence
