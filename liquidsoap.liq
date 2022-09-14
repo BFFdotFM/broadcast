@@ -154,36 +154,46 @@ add_protocol(
 
 # Custom Configuration (Specified in Station Profile)
 ### BEGIN: BFF.fm Library Code ###
+## After: Azuracast helpers, `add_protocol("media", ...)`
 
 ## Time Utilities
-# Shorthands for various time formats from the system time
+# Shorthands for various time formats
 
 let timestamp = ()
 
-def timestamp.custom(format="%T") =
-  list.hd(default="", process.read.lines(env=[("TZ", ":America/Los_Angeles"), ("FORMAT", format)], "date +$FORMAT"))
+# Default to the system timestamp and 'now'
+def timestamp.custom(format="%T", datetime="now") =
+  list.hd(default="", process.read.lines(env=[("TZ", ":America/Los_Angeles"), ("FORMAT", format), ("DT", datetime)], "date -d$DT +$FORMAT"))
 end
 
-def timestamp.hms() =
-  timestamp.custom("%T")
+# e.g. 20:45:23
+def timestamp.hms(datetime="now") =
+  timestamp.custom("%T", datetime)
 end
 
-def timestamp.iso8609() =
-  timestamp.custom("%Y-%m-%dT%H:%M:%S")
+# e.g. 2022-09-14T03:52:38
+def timestamp.iso8609(datetime="now") =
+  timestamp.custom("%Y-%m-%dT%H:%M:%S", datetime)
 end
 
-def timestamp.ymdhms() =
-  timestamp.custom("%Y%m%dT%H%M%S")
+# e.g. 20220914T035238
+def timestamp.ymdhms(datetime="now") =
+  timestamp.custom("%Y%m%dT%H%M%S", datetime)
 end
 
-def timestamp.unix() =
-  timestamp.custom("%s")
+# e.g. 1663131225
+def timestamp.unix(datetime="now") =
+  timestamp.custom("%s", datetime)
+end
+
+# e.g. 9:49pm on 13 September, 2022
+def timestamp.friendly(datetime="now") =
+  timestamp.custom("%-I:%M%P on %-d %B, %Y", datetime)
 end
 
 ## Hash and Crypto
-
+# Last.FM's API needed some MD5 smushing, so here it is.
 let hash = ()
-
 def hash.md5(str) =
   md5sum = file.which("md5sum")
   log.debug("Path to md5sum: #{md5sum}")
@@ -192,12 +202,20 @@ def hash.md5(str) =
 end
 
 ## Curl HTTP functions
-# We need to POST and GET data via CURL, these wrappers provide some sugar around the build-in http.get/post
-
+# While Azuracast w/ Liquidsoap 2 now has curllib HTTP functions build in (these
+# function used to shell out to curl), we still use these wrappers provide some
+# sugar around the build-in http.get/post methods, particularly for data wrangling
 let curl = ()
 let curl.version = ref(list.hd(default="curl/unknown", process.read.lines("curl --version | head -1 | awk '{ print $1 \"/\" $2 }'")))
-let curl.userAgent = ref("LiquidSoap/#{liquidsoap.version} (#{!curl.version}) #{!user_agent_name} <#{!user_agent_url}>")
+let curl.userAgent = ref("Liquidsoap/#{liquidsoap.version} (#{!curl.version}) #{!user_agent_name} <#{!user_agent_url}>")
 
+# Provide a data object ala
+#
+# {
+#   key: "data",
+#   another: "more"
+# }
+#
 def curl.json(~data={}, ~timeout_ms=2000, theUrl) =
   log("cURL JSON: #{theUrl}")
   try
@@ -218,6 +236,13 @@ def curl.json(~data={}, ~timeout_ms=2000, theUrl) =
   end
 end
 
+# Provide the data object as a list of pairs
+#
+# [
+#   ("key", "data"),
+#   ("another", "more")
+# ]
+#
 def curl.post(~data=[], ~timeout_ms=2000, theUrl) =
   log("cURL POST: #{theUrl}")
 
@@ -259,8 +284,8 @@ end
 
 ## BFF.fm API functions
 #
-# BFF.fm CMS is a forked version of Creek, along with some of our own deployment idiocyncracies,
-# so this wrapper makes calling the API easier
+# The BFF.fm CMS is a forked version of Creek.fm, along with some of our own
+# deployment idiocyncracies, so this wrapper makes calling the API easier
 let bff = ()
 let bff.appId = creek_app_id
 let bff.base = creek_api_base
@@ -295,13 +320,9 @@ end
 
 ## Slack Functions
 # BFF.fm makes heavy use of Slack for all our community organizing and a lot of technical monitoring.
-
 let slack = ()
 
-# Configure as pairs of named channels, plus the unique `ABCD/1234` part of the WebHook URL configured
-# through an app at https://api.slack.com/apps
-#
-# You must specify a default.
+# These options are documented in the configuration block above
 let slack.defaultChannel = slack_default_channel
 let slack.channels = slack_named_channels
 let slack.messagePrefix = slack_message_prefix
@@ -322,13 +343,13 @@ end
 
 ## Last.FM Functions
 #
-# Last.FM integration can also be provided via an extension for LiquidSoap, but it's not shipping in AzuraCast at this
-# time, so we implemented the `track.scrobble` API ourselves.
+# Last.FM integration can also be provided via an extension for Liquidsoap, but it's
+# not shipping in AzuraCast at this time, so we implemented the `track.scrobble` API
+# ourselves.
 #
-# You'll need to create an app at https://www.last.fm/api and then auth your account against it to get a Session token
-# and store it all in the config above.
+# You'll need to create an app at https://www.last.fm/api and then auth your account
+# against it to get a Session token and store it all in the config above.
 let lastfm = ()
-
 let lastfm.apiBase = ref("https://ws.audioscrobbler.com/2.0/")
 let lastfm.appId = lastfm_app_id
 let lastfm.appSecret = lastfm_app_secret
@@ -374,7 +395,7 @@ def lastfm.scrobbleNowPlayingString(nowPlaying) =
 end
 
 ## TuneIn AIR Support
-# AzuraCast does have some native support for TuneIN, but since we're pulling richer track
+# AzuraCast does have some native support for TuneIn, but since we're pulling richer track
 # metadata (see below), we've implemented it directly.
 
 let tunein = ()
@@ -412,7 +433,7 @@ end
 
 ### END: BFF.fm Library Code ###
 
-playlist_default = playlist(id="playlist_default",mime_type="audio/x-mpegurl",mode="randomize",reload_mode="watch","/var/azuracast/stations/bff.fm_station_upgrade_testbed/playlists/playlist_default.m3u")
+playlist_default = playlist(id="playlist_default",mime_type="audio/x-mpegurl",mode="randomize",reload_mode="watch","/var/azuracast/stations/example/playlists/playlist_default.m3u")
 playlist_default = cue_cut(id="cue_playlist_default", playlist_default)
 
 # Standard Playlists
