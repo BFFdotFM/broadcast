@@ -151,6 +151,14 @@ add_protocol(
 )
 
 # Custom Configuration (Specified in Station Profile)
+### BEGIN: BFF.fm Settings Overrides ###
+
+# log level 5 for mega debugging
+# settings.server.log.level.set(5)
+
+### END: BFF.fm Settings Overrides
+
+
 ### BEGIN: BFF.fm Library Code ###
 ## After: Azuracast helpers, `add_protocol("media", ...)`
 
@@ -431,11 +439,12 @@ end
 
 ### END: BFF.fm Library Code ###
 
-playlist_default = playlist(id="playlist_default",mime_type="audio/x-mpegurl",mode="randomize",reload_mode="watch","/var/azuracast/stations/example/playlists/playlist_default.m3u")
-playlist_default = cue_cut(id="cue_playlist_default", playlist_default)
+playlist_silence = playlist(id="playlist_silence",mime_type="audio/x-mpegurl",mode="normal",reload_mode="watch","/var/azuracast/stations/ebbfs/playlists/playlist_silence.m3u")
+playlist_silence = cue_cut(id="cue_playlist_silence", playlist_silence)
+playlist_silence = drop_metadata(playlist_silence)
 
 # Standard Playlists
-radio = random(id="standard_playlists", weights=[3], [playlist_default])
+radio = random(id="standard_playlists", weights=[5], [playlist_silence])
 
 requests = request.queue(id="requests")
 requests = cue_cut(id="cue_requests", requests)
@@ -481,6 +490,10 @@ radio = server.insert_metadata(id="custom_metadata", radio)
 
 # Apply amplification metadata (if supplied)
 radio = amplify(override="liq_amplify", 1., radio)
+
+# Normalization and Compression
+radio = normalize(target = 0., window = 0.03, gain_min = -16., gain_max = 0., radio)
+radio = compress.exponential(radio, mu = 1.0)
 
 radio = fallback(id="safe_fallback", track_sensitive = false, [radio, single(id="error_jingle", "/usr/local/share/icecast/web/error.mp3")])
 
@@ -528,7 +541,7 @@ def handle_jingle_mode(m) =
     end
 end
 
-radio = metadata.map(update=false, handle_jingle_mode, radio)
+radio = metadata.map(update=false, strip=true, handle_jingle_mode, radio)
 
 # Custom Configuration (Specified in Station Profile)
 ### BEGIN: BFF.fm Ingest Harbors ###
@@ -722,6 +735,23 @@ def ingest.makeStudioSource(studioName, ~mount, ~username="source", ~password, ~
   # Create an IceCast harbor for this studio
   harbor = audio_to_stereo(input.harbor(mount, port = ingest.icecastPort, auth = studioAuth, icy = true, icy_metadata_charset = "UTF-8", metadata_charset = "UTF-8", on_connect = connected, on_disconnect = disconnected, buffer = 10., max = 15.))
   ignore(output.dummy(harbor, fallible=true))
+
+  # Experiment: Monitor for connection instability/buffer emptiness
+  def interruption_notice() =
+    ignore(slack.log(channel="debug", ":leaves: #{studioName} source may be unstable or buffer empty (*#{ingest.djFor(studioName)}*)"))
+  end
+  harbor.on_leave(interruption_notice)
+
+  # Experiment with silence detection
+  def blank_warning() =
+    ignore(slack.log(channel="debug", ":mute: #{studioName} Silence detected on source (*#{ingest.djFor(studioName)}*)"))
+  end
+  ignore(blank.detect(
+    max_blank = 5.,
+    track_sensitive = false,
+    blank_warning,
+    harbor
+  ))
 
   # return the source
   if (dropMetadata == true) then
@@ -923,8 +953,8 @@ end
 # from the Creek CMS API
 dj_sources = fallback(track_sensitive=false, [
   ingest.makeCreekStreamerSource("Remote DJ", mount="/dj", dropMetadata=true),
-  ingest.makeAzuraCastStreamerSource("Remote DJ", mount="/azdj", dropMetadata=true),
-  ingest.makeStudioSource("Studio A DJ", mount="/studio", password=!ingest_studio_a_password, alertOnDisconnect=true, dropMetadata=true)
+  ingest.makeAzuraCastStreamerSource("Remote DJ [Azuracast]", mount="/azdj", dropMetadata=true),
+  ingest.makeStudioSource("Studio A", mount="/studio", password=!ingest_studio_a_password, alertOnDisconnect=true, dropMetadata=true)
 ])
 
 # Tracking metadata
@@ -941,73 +971,81 @@ dj_sources = insert_metadata(dj_sources)
 last_creek_track = ref(("BFF.fm", timestamp.hms()))
 
 def poll_creek_metadata() =
-  last_name = fst(!last_creek_track)
-  now = timestamp.hms()
+  # We run the polling in an async thread as a lazy way to ensure that we don't
+  # break the polling if there's a JSON parse error or some other crash in the
+  # request process. Ensures it'll always run again and failures are shrugged off
+  def f() =
+    last_name = fst(!last_creek_track)
+    now = timestamp.hms()
 
-  # Fetch the now playing track from BFF.fm API
-  onAirJson = bff.fetch(cacheBust=true, "data/onair/now.json")
-  log.debug("Fetched: #{onAirJson}")
+    # Fetch the now playing track from BFF.fm API
+    onAirJson = bff.fetch(cacheBust=true, "data/onair/now.json")
+    log.debug("Fetched: #{onAirJson}")
 
-  # Just as an aside, the change in JSON parsing from Liquidsoap 1.4
-  # to 2.1 absolutely broke my brain for about half a day, but now that
-  # I see it, this is really, really nice.
-  let json.parse (onAir : {
-    artist: string?,
-    title: string?,
-    album: string?,
-    label: string?,
-    program: string?,
-    presenter: string?,
-    url: string?
-  }) = onAirJson
+    # Just as an aside, the change in JSON parsing from Liquidsoap 1.4
+    # to 2.1 absolutely broke my brain for about half a day, but now that
+    # I see it, this is really, really nice.
+    let json.parse (onAir : {
+      artist: string?,
+      title: string?,
+      album: string?,
+      label: string?,
+      program: string?,
+      presenter: string?,
+      url: string?
+    }) = onAirJson
 
-  # If there's no current track (merely a show) then the artist/album/title/label
-  # data will be null.
-  if (onAir.artist != null()) then
-    playingString = "#{onAir.artist} - #{onAir.title}"
+    # If there's no current track (merely a show) then the artist/album/title/label
+    # data will be null.
+    if (onAir.artist != null()) then
+      playingString = "#{onAir.artist} - #{onAir.title}"
 
-    # If the currently playing track isn't the same as on last poll:
-    if (playingString != last_name) then
-      # Update last displayed track title
-      last_creek_track := (playingString, now)
+      # If the currently playing track isn't the same as on last poll:
+      if (playingString != last_name) then
+        # Update last displayed track title
+        last_creek_track := (playingString, now)
 
-      # Chaged metadata so update source metadata as 'new track'
-      dj_sources.insert_metadata(new_track=true, [("title", playingString)])
+        # Chaged metadata so update source metadata as 'new track'
+        dj_sources.insert_metadata(new_track=true, [("title", playingString)])
 
-      # Scrobble new tracks to Last.FM
-      lastfm.scrobble(artist="#{onAir.artist}", album="#{onAir.album}", track="#{onAir.title}")
+        # Scrobble new tracks to Last.FM
+        lastfm.scrobble(artist="#{onAir.artist}", album="#{onAir.album}", track="#{onAir.title}")
 
-      # Log Now Playing to TuneIn AIR API
-      tunein.nowPlaying(artist="#{onAir.artist}", track="#{onAir.title}", album="#{onAir.album ?? onAir.title}")
+        # Log Now Playing to TuneIn AIR API
+        tunein.nowPlaying(artist="#{onAir.artist}", track="#{onAir.title}", album="#{onAir.album ?? onAir.title}")
 
-      # Log to Slack
-      slack.log(channel="now_playing", ":notes: #{onAir.artist} - #{onAir.title} (#{onAir.album}) [#{onAir.label ?? ':warning: No Label'}]")
-    end
-  else
-    # No track: Display the current show/host/station
-
-    # Generally, BFF.fm should always have a show in the schedule (even placeholders), but
-    # just in case there's a gap, or a data error, set up a fallback
-    show = if (onAir.program != null()) then
-      "#{onAir.program}"
+        # Log to Slack
+        slack.log(channel="now_playing", ":notes: #{onAir.artist} - #{onAir.title} (#{onAir.album}) [#{onAir.label ?? ':warning: No Label'}]")
+      end
     else
-      "BFF.fm"
-    end
+      # No track: Display the current show/host/station
 
-    if (show != last_name) then
-      # Update last displayed track title
-      last_creek_track := (show, now)
+      # Generally, BFF.fm should always have a show in the schedule (even placeholders), but
+      # just in case there's a gap, or a data error, set up a fallback
+      show = if (onAir.program != null()) then
+        "#{onAir.program}"
+      else
+        "BFF.fm"
+      end
 
-      # Update source metadata, but not as a 'track'
-      dj_sources.insert_metadata(new_track=false, [("title", show)])
+      if (show != last_name) then
+        # Update last displayed track title
+        last_creek_track := (show, now)
 
-      # Log to Slack
-      slack.log(channel="now_playing", ":radio: #{show} w/ #{onAir.presenter ?? 'Unknown Host'}")
+        # Update source metadata, but not as a 'track'
+        dj_sources.insert_metadata(new_track=false, [("title", show)])
 
-      # Log Now Playing 'commerical'/non-music to TuneIn
-      tunein.nonMusic(attribution=(onAir.presenter ?? "BFF.fm"), name=show)
+        # Log to Slack
+        slack.log(channel="now_playing", ":radio: #{show} w/ #{onAir.presenter ?? 'Unknown Host'}")
+
+        # Log Now Playing 'commerical'/non-music to TuneIn
+        tunein.nonMusic(attribution=(onAir.presenter ?? "BFF.fm"), name=show)
+      end
     end
   end
+
+  # Run the metadata fetch
+  thread.run(f)
 
   # Return 15s timeout for the next poll
   (15.)
@@ -1040,7 +1078,8 @@ live_broadcast = map_metadata(insert_live_metadata, live_broadcast)
 # TODO: This works, but is glitchy. Need to dedicate some time to properly
 # learning Liquidsoap crossfade construction, especially when we move automation
 # into the cloud.
-live_broadcast = cross(minimum=0., duration=3.00, live_aware_crossfade, live_broadcast)
+# DEBUGGING: Remove call to crossfade as it appears to get triggered whenever track metadata changes
+# live_broadcast = cross(minimum=0., duration=3.00, live_aware_crossfade, live_broadcast)
 
 radio = fallback(track_sensitive=false, [live_broadcast, radio])
 
