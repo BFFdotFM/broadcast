@@ -848,6 +848,15 @@ def ingest.makeCreekStreamerSource(
     ingest.registerSource(studioName, highPriority)
   end
 
+  # Count successful connections within 10s period to catch ffmpeg crashes
+  let successCount = ref(0)
+  let successRestartThreshold = 10
+  let successRestartWindow = 10.
+
+  def reset_success_count() =
+    successCount := 0
+  end
+
   # Keep track of who the last DJ was so we can monitor when it changes.
   lastDj = ref("")
 
@@ -902,6 +911,32 @@ def ingest.makeCreekStreamerSource(
       end
       connectionsDebug = list.fold(listToString, "", !ingest.connections)
       log.debug("Connections After Add: #{connectionsDebug}")
+    end
+
+    # HACK: Count successful connections in a short time window. If a DJ
+    # repeatedly, successfully reconnects within a short span, it's an indicator
+    # that the ingest server is crashing at the ffmpeg level. To remedy this, we
+    # restart the server.
+
+    # Clear the count afer successRestartWindow seconds (e.g. 10.)
+    if (successCount == 0) then
+      thread.run(fast=false, delay=successRestartWindow, reset_success_count)
+    end
+
+    successCount := successCount + 1
+
+    # If this is the nth successful connection within the window, presume crashing is occuring,
+    # and restart the server.
+    if (successCount > successRestartThreshold) then
+      slack.log(":boom: #{dj} was booted from #{studioName} #{successRestartThreshold} times in #{successRestartWindow} seconds.")
+      slack.log(":boom: Ingest server is likely crashing. Automatic recovery triggered: Restarting Azurcast...")
+      log.info("#{studioName} ingest crashed! Automatic recovery triggering Azuracast restart...")
+
+      _ = azuracast_api_call(
+        timeout_ms=10000,
+        "restart",
+        ""
+      )
     end
 
     log.info("#{studioName} connected! DJ: #{dj} - #{header}")
