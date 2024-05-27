@@ -116,7 +116,7 @@ ignore(to_live)
 azuracast_api_url = "http://127.0.0.1:6010/api/internal/1/liquidsoap"
 azuracast_api_key = "(PASSWORD)"
 
-def azuracast_api_call(~timeout_ms=2000, url, payload) =
+def azuracast_api_call(~timeout_ms=2000, url, payload="") =
     full_url = "#{azuracast_api_url}/#{url}"
 
     log("API #{url} - Sending POST request to '#{full_url}' with body: #{payload}")
@@ -216,6 +216,10 @@ let curl = ()
 let curl.version = ref(list.hd(default="curl/unknown", process.read.lines("curl --version | head -1 | awk '{ print $1 \"/\" $2 }'")))
 let curl.userAgent = ref("Liquidsoap/#{liquidsoap.version} (#{!curl.version}) #{!user_agent_name} <#{!user_agent_url}>")
 
+def curl.headers(headers=[]) =
+  list.add(("User-Agent", !curl.userAgent), headers)
+end
+
 # Provide a data object ala
 #
 # {
@@ -223,14 +227,14 @@ let curl.userAgent = ref("Liquidsoap/#{liquidsoap.version} (#{!curl.version}) #{
 #   another: "more"
 # }
 #
-def curl.json(~data={}, ~timeout_ms=2000, theUrl) =
+def curl.json(~data={}, ~timeout_ms=2000, ~headers=[], theUrl) =
   log("cURL JSON: #{theUrl}")
   try
     response = http.post(theUrl,
-      headers=[
-        ("User-Agent", !curl.userAgent),
-        ("Content-Type", "application/json")
-      ],
+      headers=curl.headers(list.add(
+        ("Content-Type", "application/json"),
+        headers
+      )),
       timeout_ms=timeout_ms,
       data=json.stringify(compact=true, data)
     )
@@ -260,10 +264,10 @@ def curl.post(~data=[], ~timeout_ms=2000, theUrl) =
 
   try
     response = http.post(theUrl,
-      headers=[
-        ("User-Agent", !curl.userAgent),
-        ("Content-Type", "application/x-www-form-urlencoded")
-      ],
+      headers=curl.headers(list.add(
+        ("Content-Type", "application/x-www-form-urlencoded"),
+        headers
+      )),
       timeout_ms=timeout_ms,
       data=formData
     )
@@ -279,6 +283,7 @@ def curl.fetch(~timeout_ms=2000, theUrl) =
   log("cURL GET: #{theUrl}")
   try
     response = http.get(theUrl,
+      headers=curl.headers(headers),
       headers=[("User-Agent", !curl.userAgent)],
       timeout_ms=timeout_ms
     )
@@ -287,6 +292,32 @@ def curl.fetch(~timeout_ms=2000, theUrl) =
     log("cURL GET: #{theUrl} - Error: #{error.kind(err)} - #{error.message(err)}")
     "Unknown HTTP error"
   end
+end
+
+## AzurazCast Public API Functions
+# Functionality that calls the public API for AzuraCast, rather than the internal
+# azuracast_api_call version.
+let azurcast_public = ()
+let azuracast_public.apiBase = azuracast_public_url
+let azuracast_public.apiKey = azuracast_public_api_key
+  
+# Extract station ID from internal API url above: `/internal/{number}/`
+def azuracast_public.stationId() = 
+  let matcher = regexp("/internal/(\d+)/")
+  list.hd(matcher.exex(azuracast_api_url), default=0)
+end
+  
+def azuracast_public.call(endpoint, payload) =
+  let api_url = "#{azuracast_public.apiBase}/api/station/#{azuracast_public.stationId}/#{endpoint}"
+  log("Azuracast Public: #{api_url}")
+
+  # Need to add X-API-Key header.
+  ignore(curl.json(
+    data=payload,
+    headers=[
+      ("X-Api-Key", azuracast_public.apiKey)
+    ],
+    api_url))
 end
 
 ## BFF.fm API functions
