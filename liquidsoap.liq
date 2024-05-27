@@ -34,6 +34,7 @@ icecast_password = ref("(PASSWORD)")
 # Our studio connections use a single client ID and so have fixed passwords hard-coded
 # into this config, rather than authenticating against Creek.
 ingest_studio_a_password = ref("(PASSWORD)")
+ingest_fallback_password = ref("(PASSWORD)")
 ingest_emergency_password = ref("(PASSWORD)")
 
 ## Last.FM scrobbling
@@ -954,7 +955,12 @@ end
 dj_sources = fallback(track_sensitive=false, [
   ingest.makeCreekStreamerSource("Remote DJ", mount="/dj", dropMetadata=true),
   ingest.makeAzuraCastStreamerSource("Remote DJ [Azuracast]", mount="/azdj", dropMetadata=true),
-  ingest.makeStudioSource("Studio A", mount="/studio", password=!ingest_studio_a_password, alertOnDisconnect=true, dropMetadata=true)
+  ingest.makeStudioSource("Studio A", mount="/studio", password=!ingest_studio_a_password, alertOnDisconnect=true, dropMetadata=true),
+  # Remote fallback is a 'last resort' source that will only be used if all other sources
+  # are disconnected. It may be used in Emergency Broadcast situations, but where we don't
+  # want to also displace home broadcasters. If Studio A is frequently reconnecting though,
+  # Emergency Broadcast is a better choice as Studio A will cut in over Remote Fallback.
+  ingest.makeStudioSource("Remote Fallback", mount="/fallback", username="fallback", password=!ingest_fallback_password, alertOnDisconnect=true, dropMetadata=true)
 ])
 
 # Tracking metadata
@@ -1061,7 +1067,7 @@ thread.run.recurrent(fast=false, delay=5., poll_creek_metadata)
 #
 # This is for use in the event that power to a studio goes down, or something goes wrong
 # on the main stream, or if aliens invade and we need to organize the resistance from a
-# back-up location. That sort of things.
+# back-up location. That sort of thing.
 emergency_broadcast = ingest.makeStudioSource("Emergency Broadcast", mount="/emergency", username="ebs", password=!ingest_emergency_password, highPriority=true)
 
 live_broadcast = fallback(track_sensitive=false, [emergency_broadcast, dj_sources])
