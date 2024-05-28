@@ -17,6 +17,10 @@ user_agent_url = ref("https://bff.fm")
 mp3_technical_difficulties = ref("https://.../broadcast-server-test-feed.mp3")
 mp3_test_feed = ref("https://.../broadcast-server-test-feed.mp3")
 
+## Azuracast Public API info
+azuracast_public_url = ref("https://broadcast.example.com")
+azuracast_public_api_key = ref("(PASSWORD)")
+
 ## Creek CMS integration
 # BFF.fm uses a modified version of Creek as its CMS, through which we authenticate
 # our streamers, and also pull canonical track metadata.
@@ -254,7 +258,7 @@ end
 #   ("another", "more")
 # ]
 #
-def curl.post(~data=[], ~timeout_ms=2000, theUrl) =
+def curl.post(~data=[], ~timeout_ms=2000, ~headers=[], theUrl) =
   log("cURL POST: #{theUrl}")
 
   def buildDataString(data, arg) =
@@ -279,12 +283,14 @@ def curl.post(~data=[], ~timeout_ms=2000, theUrl) =
   end
 end
 
-def curl.fetch(~timeout_ms=2000, theUrl) =
+def curl.fetch(~timeout_ms=2000, ~headers=[], theUrl) =
   log("cURL GET: #{theUrl}")
   try
     response = http.get(theUrl,
-      headers=curl.headers(headers),
-      headers=[("User-Agent", !curl.userAgent)],
+      headers=curl.headers(list.add(
+        ("Content-Type", "application/x-www-form-urlencoded"),
+        headers
+      )),
       timeout_ms=timeout_ms
     )
     "#{response}"
@@ -294,24 +300,25 @@ def curl.fetch(~timeout_ms=2000, theUrl) =
   end
 end
 
-## AzurazCast Public API Functions
+## Azuracast Public API Functions
 # Functionality that calls the public API for AzuraCast, rather than the internal
 # azuracast_api_call version.
-let azurcast_public = ()
+#
+# You need to provide an API key with `Administer Stations` permission.
+let azuracast_public = ()
 let azuracast_public.apiBase = azuracast_public_url
 let azuracast_public.apiKey = azuracast_public_api_key
   
 # Extract station ID from internal API url above: `/internal/{number}/`
 def azuracast_public.stationId() = 
-  let matcher = regexp("/internal/(\d+)/")
-  list.hd(matcher.exex(azuracast_api_url), default=0)
+  let matcher = regexp("/internal/(\\d+)/")
+  list.hd(matcher.exec(azuracast_api_url), default=0)
 end
   
 def azuracast_public.call(endpoint, payload) =
   let api_url = "#{azuracast_public.apiBase}/api/station/#{azuracast_public.stationId}/#{endpoint}"
   log("Azuracast Public: #{api_url}")
 
-  # Need to add X-API-Key header.
   ignore(curl.json(
     data=payload,
     headers=[
@@ -465,7 +472,7 @@ def tunein.nonMusic(~attribution, ~name) =
   tunein.airRequest([
     ("artist", attribution),
     ("title", name),
-#    ("commercial", "true")
+    # ("commercial", "true")
   ])
 end
 
@@ -963,11 +970,7 @@ def ingest.makeCreekStreamerSource(
       slack.log(":boom: Ingest server is likely crashing. Automatic recovery triggered: Restarting Azurcast...")
       log.info("#{studioName} ingest crashed! Automatic recovery triggering Azuracast restart...")
 
-      _ = azuracast_api_call(
-        timeout_ms=10000,
-        "restart",
-        ""
-      )
+      azuracast_public.call("backend/restart")
     end
 
     log.info("#{studioName} connected! DJ: #{dj} - #{header}")
