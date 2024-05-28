@@ -312,17 +312,18 @@ let azuracast_public.apiKey = azuracast_public_api_key
 # Extract station ID from internal API url above: `/internal/{number}/`
 def azuracast_public.stationId() = 
   let matcher = regexp("/internal/(\\d+)/")
-  list.hd(matcher.exec(azuracast_api_url), default=0)
+  # returns [(index, value)]
+  snd(list.hd(matcher.exec(azuracast_api_url), default=(0, "0")))
 end
   
-def azuracast_public.call(endpoint, payload) =
-  let api_url = "#{azuracast_public.apiBase}/api/station/#{azuracast_public.stationId}/#{endpoint}"
+def azuracast_public.call(endpoint, payload={}) =
+  let api_url = "#{!azuracast_public.apiBase}/api/station/#{azuracast_public.stationId()}/#{endpoint}"
   log("Azuracast Public: #{api_url}")
 
   ignore(curl.json(
     data=payload,
     headers=[
-      ("X-Api-Key", azuracast_public.apiKey)
+      ("X-Api-Key", !azuracast_public.apiKey)
     ],
     api_url))
 end
@@ -957,15 +958,15 @@ def ingest.makeCreekStreamerSource(
     # restart the server.
 
     # Clear the count afer successRestartWindow seconds (e.g. 10.)
-    if (successCount == 0) then
+    if (!successCount == 0) then
       thread.run(fast=false, delay=successRestartWindow, reset_success_count)
     end
 
-    successCount := successCount + 1
+    successCount := !successCount + 1
 
     # If this is the nth successful connection within the window, presume crashing is occuring,
     # and restart the server.
-    if (successCount > successRestartThreshold) then
+    if (!successCount > successRestartThreshold) then
       slack.log(":boom: #{dj} was booted from #{studioName} #{successRestartThreshold} times in #{successRestartWindow} seconds.")
       slack.log(":boom: Ingest server is likely crashing. Automatic recovery triggered: Restarting Azurcast...")
       log.info("#{studioName} ingest crashed! Automatic recovery triggering Azuracast restart...")
