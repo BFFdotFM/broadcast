@@ -17,6 +17,10 @@ user_agent_url = ref("https://bff.fm")
 mp3_technical_difficulties = ref("https://.../broadcast-server-test-feed.mp3")
 mp3_test_feed = ref("https://.../broadcast-server-test-feed.mp3")
 
+## Azuracast Public API info
+azuracast_public_url = ref("https://broadcast.example.com")
+azuracast_public_api_key = ref("(PASSWORD)")
+
 ## Creek CMS integration
 # BFF.fm uses a modified version of Creek as its CMS, through which we authenticate
 # our streamers, and also pull canonical track metadata.
@@ -116,7 +120,7 @@ ignore(to_live)
 azuracast_api_url = "http://127.0.0.1:6010/api/internal/1/liquidsoap"
 azuracast_api_key = "(PASSWORD)"
 
-def azuracast_api_call(~timeout_ms=2000, url, payload) =
+def azuracast_api_call(~timeout_ms=2000, url, payload="") =
     full_url = "#{azuracast_api_url}/#{url}"
 
     log("API #{url} - Sending POST request to '#{full_url}' with body: #{payload}")
@@ -216,6 +220,10 @@ let curl = ()
 let curl.version = ref(list.hd(default="curl/unknown", process.read.lines("curl --version | head -1 | awk '{ print $1 \"/\" $2 }'")))
 let curl.userAgent = ref("Liquidsoap/#{liquidsoap.version} (#{!curl.version}) #{!user_agent_name} <#{!user_agent_url}>")
 
+def curl.headers(headers=[]) =
+  list.add(("User-Agent", !curl.userAgent), headers)
+end
+
 # Provide a data object ala
 #
 # {
@@ -223,14 +231,14 @@ let curl.userAgent = ref("Liquidsoap/#{liquidsoap.version} (#{!curl.version}) #{
 #   another: "more"
 # }
 #
-def curl.json(~data={}, ~timeout_ms=2000, theUrl) =
+def curl.json(~data={}, ~timeout_ms=2000, ~headers=[], theUrl) =
   log("cURL JSON: #{theUrl}")
   try
     response = http.post(theUrl,
-      headers=[
-        ("User-Agent", !curl.userAgent),
-        ("Content-Type", "application/json")
-      ],
+      headers=curl.headers(list.add(
+        ("Content-Type", "application/json"),
+        headers
+      )),
       timeout_ms=timeout_ms,
       data=json.stringify(compact=true, data)
     )
@@ -250,7 +258,7 @@ end
 #   ("another", "more")
 # ]
 #
-def curl.post(~data=[], ~timeout_ms=2000, theUrl) =
+def curl.post(~data=[], ~timeout_ms=2000, ~headers=[], theUrl) =
   log("cURL POST: #{theUrl}")
 
   def buildDataString(data, arg) =
@@ -260,10 +268,10 @@ def curl.post(~data=[], ~timeout_ms=2000, theUrl) =
 
   try
     response = http.post(theUrl,
-      headers=[
-        ("User-Agent", !curl.userAgent),
-        ("Content-Type", "application/x-www-form-urlencoded")
-      ],
+      headers=curl.headers(list.add(
+        ("Content-Type", "application/x-www-form-urlencoded"),
+        headers
+      )),
       timeout_ms=timeout_ms,
       data=formData
     )
@@ -275,11 +283,14 @@ def curl.post(~data=[], ~timeout_ms=2000, theUrl) =
   end
 end
 
-def curl.fetch(~timeout_ms=2000, theUrl) =
+def curl.fetch(~timeout_ms=2000, ~headers=[], theUrl) =
   log("cURL GET: #{theUrl}")
   try
     response = http.get(theUrl,
-      headers=[("User-Agent", !curl.userAgent)],
+      headers=curl.headers(list.add(
+        ("Content-Type", "application/x-www-form-urlencoded"),
+        headers
+      )),
       timeout_ms=timeout_ms
     )
     "#{response}"
@@ -287,6 +298,34 @@ def curl.fetch(~timeout_ms=2000, theUrl) =
     log("cURL GET: #{theUrl} - Error: #{error.kind(err)} - #{error.message(err)}")
     "Unknown HTTP error"
   end
+end
+
+## Azuracast Public API Functions
+# Functionality that calls the public API for AzuraCast, rather than the internal
+# azuracast_api_call version.
+#
+# You need to provide an API key with `Administer Stations` permission.
+let azuracast_public = ()
+let azuracast_public.apiBase = azuracast_public_url
+let azuracast_public.apiKey = azuracast_public_api_key
+  
+# Extract station ID from internal API url above: `/internal/{number}/`
+def azuracast_public.stationId() = 
+  let matcher = regexp("/internal/(\\d+)/")
+  # returns [(index, value)]
+  snd(list.hd(matcher.exec(azuracast_api_url), default=(0, "0")))
+end
+  
+def azuracast_public.call(endpoint, payload={}) =
+  let api_url = "#{!azuracast_public.apiBase}/api/station/#{azuracast_public.stationId()}/#{endpoint}"
+  log("Azuracast Public: #{api_url}")
+
+  ignore(curl.json(
+    data=payload,
+    headers=[
+      ("X-Api-Key", !azuracast_public.apiKey)
+    ],
+    api_url))
 end
 
 ## BFF.fm API functions
@@ -434,7 +473,7 @@ def tunein.nonMusic(~attribution, ~name) =
   tunein.airRequest([
     ("artist", attribution),
     ("title", name),
-#    ("commercial", "true")
+    # ("commercial", "true")
   ])
 end
 
@@ -848,6 +887,15 @@ def ingest.makeCreekStreamerSource(
     ingest.registerSource(studioName, highPriority)
   end
 
+  # Count successful connections within 10s period to catch ffmpeg crashes
+  let successCount = ref(0)
+  let successRestartThreshold = 10
+  let successRestartWindow = 10.
+
+  def reset_success_count() =
+    successCount := 0
+  end
+
   # Keep track of who the last DJ was so we can monitor when it changes.
   lastDj = ref("")
 
@@ -902,6 +950,28 @@ def ingest.makeCreekStreamerSource(
       end
       connectionsDebug = list.fold(listToString, "", !ingest.connections)
       log.debug("Connections After Add: #{connectionsDebug}")
+    end
+
+    # HACK: Count successful connections in a short time window. If a DJ
+    # repeatedly, successfully reconnects within a short span, it's an indicator
+    # that the ingest server is crashing at the ffmpeg level. To remedy this, we
+    # restart the server.
+
+    # Clear the count afer successRestartWindow seconds (e.g. 10.)
+    if (!successCount == 0) then
+      thread.run(fast=false, delay=successRestartWindow, reset_success_count)
+    end
+
+    successCount := !successCount + 1
+
+    # If this is the nth successful connection within the window, presume crashing is occuring,
+    # and restart the server.
+    if (!successCount > successRestartThreshold) then
+      slack.log(":boom: #{dj} was booted from #{studioName} #{successRestartThreshold} times in #{successRestartWindow} seconds.")
+      slack.log(":boom: Ingest server is likely crashing. Automatic recovery triggered: Restarting Azurcast...")
+      log.info("#{studioName} ingest crashed! Automatic recovery triggering Azuracast restart...")
+
+      azuracast_public.call("backend/restart")
     end
 
     log.info("#{studioName} connected! DJ: #{dj} - #{header}")
